@@ -47,7 +47,7 @@ This also would work if the target type was an interface that the provided type 
 
 We can also use dependy injection with functions.
 
-Consider the following example were we have 3 types that depend in one another.
+Consider the following example were we have 3 types that depend on one another.
 
 ```go
 type Message string
@@ -81,7 +81,7 @@ like before, we declare the providers, but this time we use functions.
 ```go
 di.Provider("event", func(g Greeter) Event {
     return Event{Greeter: g}
-)
+})
 di.Provider("", func() Message {
     return Message("Hi there!")
 })
