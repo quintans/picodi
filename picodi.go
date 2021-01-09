@@ -7,6 +7,10 @@ import (
 	"unsafe"
 )
 
+type NamedProviders map[string]interface{}
+
+type Providers []interface{}
+
 // AfterWirer is an interface for any implementation that wants to something after being wired.
 type AfterWirer interface {
 	AfterWire() error
@@ -40,7 +44,11 @@ func New() *PicoDI {
 	}
 }
 
-// Provider register a provider.
+func (di *PicoDI) Provider(provider interface{}) {
+	di.NamedProvider("", provider)
+}
+
+// NamedProvider register a provider.
 //	This is used like:
 //
 //	type Foo struct { Bar string }
@@ -52,10 +60,10 @@ func New() *PicoDI {
 //
 //	PicoDI.Register("foo", Foo{})
 //
-// In both cases an entry is also created for the full tpye name. eg: `github.com/quintans/picodi/Foo`
+// In both cases an entry is also created for the full type name. eg: `github.com/quintans/picodi/Foo`
 // Registering with an empty name will only register with the full type name.
 // If the returned value of the provider is to be wired, it must return a pointer or interface
-func (di *PicoDI) Provider(name string, provider interface{}) {
+func (di *PicoDI) NamedProvider(name string, provider interface{}) {
 	v := reflect.ValueOf(provider)
 	t := v.Type()
 	var tn string
@@ -103,9 +111,15 @@ func validateProviderFunc(t reflect.Type) error {
 	return nil
 }
 
-func (di *PicoDI) Providers(providers map[string]interface{}) {
+func (di *PicoDI) NamedProviders(providers NamedProviders) {
 	for k, v := range providers {
-		di.Provider(k, v)
+		di.NamedProvider(k, v)
+	}
+}
+
+func (di *PicoDI) Providers(providers Providers) {
+	for _, v := range providers {
+		di.NamedProvider("", v)
 	}
 }
 

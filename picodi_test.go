@@ -1,9 +1,10 @@
-package picodi
+package picodi_test
 
 import (
 	"errors"
 	"testing"
 
+	"github.com/quintans/picodi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,13 +42,13 @@ func (b *Bar) AfterWire() error {
 }
 
 func TestStructWire(t *testing.T) {
-	pico := New()
-	pico.Provider("fooptr", &Foo{"Foo"})
-	pico.Provider("foo", Foo{"Foo"})
-	pico.Provider("foofn", func() Foo {
+	pico := picodi.New()
+	pico.NamedProvider("fooptr", &Foo{"Foo"})
+	pico.NamedProvider("foo", Foo{"Foo"})
+	pico.NamedProvider("foofn", func() Foo {
 		return Foo{"FooFn"}
 	})
-	pico.Provider("", Foo{"Foo"})
+	pico.NamedProvider("", Foo{"Foo"})
 
 	var bar = Bar{}
 	if err := pico.Wire(&bar); err != nil {
@@ -90,7 +91,7 @@ type Faulty struct {
 }
 
 func TestErrorWire(t *testing.T) {
-	var pico = New()
+	var pico = picodi.New()
 	err := pico.Wire(&Faulty{})
 	require.Error(t, err, "Expected error for missing provider, nothing")
 }
@@ -131,12 +132,12 @@ func (e Event) Start() string {
 }
 
 func TestWireConstructors(t *testing.T) {
-	var pico = New()
-	pico.Provider("event", NewEvent)
-	pico.Provider("message", NewMessage)
-	pico.Provider("greeter", NewGreeter)
+	var di = picodi.New()
+	di.NamedProvider("event", NewEvent)
+	di.NamedProvider("message", NewMessage)
+	di.NamedProvider("greeter", NewGreeter)
 
-	e, err := pico.Resolve("event") // will wire if not already
+	e, err := di.Resolve("event") // will wire if not already
 	require.NoError(t, err)
 
 	actual := e.(Event).Start()
@@ -148,11 +149,13 @@ func NewGrumpyEvent(g GreeterImpl) (Event, error) {
 }
 
 func TestGrumpy(t *testing.T) {
-	var pico = New()
-	pico.Provider("event", NewGrumpyEvent)
-	pico.Provider("message", NewMessage)
-	pico.Provider("greeter", NewGreeter)
+	var di = picodi.New()
+	di.NamedProviders(picodi.NamedProviders{
+		"event":   NewGrumpyEvent,
+		"message": NewMessage,
+		"greeter": NewGreeter,
+	})
 
-	_, err := pico.Resolve("event") // will wire if not already
+	_, err := di.Resolve("event") // will wire if not already
 	require.Error(t, err)
 }
