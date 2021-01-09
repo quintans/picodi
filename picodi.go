@@ -7,6 +7,11 @@ import (
 	"unsafe"
 )
 
+const (
+	wireTagKey        = "wire"
+	wireFlagTransient = "transient"
+)
+
 type NamedProviders map[string]interface{}
 
 type Providers []interface{}
@@ -156,39 +161,52 @@ func (di *PicoDI) constructorInjection(provider reflect.Value) (interface{}, err
 // GetByType returns the instance by Type
 func (di *PicoDI) GetByType(zero interface{}) (interface{}, error) {
 	t := reflect.TypeOf(zero)
-	return di.get(make([]chain, 0), typeName(t))
+	return di.get(make([]chain, 0), typeName(t), false)
 }
 
 // Resolve returns the instance by name
 func (di *PicoDI) Resolve(name string) (interface{}, error) {
-	return di.get(make([]chain, 0), name)
+	return di.get(make([]chain, 0), name, false)
 }
 
-func (di *PicoDI) get(fetching []chain, name string) (interface{}, error) {
+func (di *PicoDI) get(fetching []chain, name string, transient bool) (interface{}, error) {
 	inj, ok := di.injectors[name]
 	if !ok {
 		return nil, fmt.Errorf("No provider was found for %s: %s", name, joinChain(fetching))
 	}
 
+	if transient {
+		return di.instantiateAndWire(fetching, inj)
+	}
+
 	if inj.instance == nil {
-		v, err := inj.provider()
+		provider, err := di.instantiateAndWire(fetching, inj)
 		if err != nil {
 			return nil, err
 		}
-		val := reflect.ValueOf(v)
-		k := val.Kind()
-		if k == reflect.Struct {
-			ptr := reflect.New(reflect.TypeOf(v))
-			ptr.Elem().Set(val)
-			val = ptr
-		}
-		if err := di.wire(fetching, val); err != nil {
-			return nil, err
-		}
-		inj.instance = v
+		inj.instance = provider
 	}
 
 	return inj.instance, nil
+}
+
+func (di *PicoDI) instantiateAndWire(fetching []chain, inj injector) (interface{}, error) {
+	provider, err := inj.provider()
+	if err != nil {
+		return nil, err
+	}
+	val := reflect.ValueOf(provider)
+	k := val.Kind()
+	if k == reflect.Struct {
+		ptr := reflect.New(reflect.TypeOf(provider))
+		ptr.Elem().Set(val)
+		val = ptr
+	}
+	if err := di.wire(fetching, val); err != nil {
+		return nil, err
+	}
+
+	return provider, nil
 }
 
 // Wire injects dependencies into the instance.
@@ -221,15 +239,23 @@ func (di *PicoDI) wire(fetching []chain, val reflect.Value) error {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 
-		if name, ok := f.Tag.Lookup("wire"); ok {
+		if name, ok := f.Tag.Lookup(wireTagKey); ok {
+			splits := strings.Split(name, ",")
+			name = splits[0]
 			if name == "" {
 				name = typeName(f.Type)
+			}
+			transient := false
+			for _, v := range splits {
+				if v == wireFlagTransient {
+					transient = true
+				}
 			}
 
 			var fieldName = t.String() + "." + f.Name
 			var link = chain{fieldName, name}
 			var names = append(fetching, link)
-			var v, err = di.get(names, name)
+			var v, err = di.get(names, name, transient)
 			if err != nil {
 				return err
 			}

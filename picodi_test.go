@@ -2,6 +2,8 @@ package picodi_test
 
 import (
 	"errors"
+	"fmt"
+	"math/rand"
 	"testing"
 
 	"github.com/quintans/picodi"
@@ -27,6 +29,7 @@ type Bar struct {
 	inner     *Foo  `wire:"fooptr"`
 	inner2    Foo   `wire:"foo"`
 	Fun       Foo   `wire:"foofn"`
+	Fun2      Foo   `wire:"foofn,transient"` // a new instance will be created
 	FooPtr    *Foo  `wire:"fooptr"`
 	afterWire bool
 }
@@ -42,11 +45,12 @@ func (b *Bar) AfterWire() error {
 }
 
 func TestStructWire(t *testing.T) {
+	rand.Seed(42)
 	pico := picodi.New()
 	pico.NamedProvider("fooptr", &Foo{"Foo"})
 	pico.NamedProvider("foo", Foo{"Foo"})
 	pico.NamedProvider("foofn", func() Foo {
-		return Foo{"FooFn"}
+		return Foo{fmt.Sprintf("FooFn-%d", rand.Intn(99))}
 	})
 	pico.NamedProvider("", Foo{"Foo"})
 
@@ -81,9 +85,12 @@ func TestStructWire(t *testing.T) {
 		t.Fatal("Expected \"Foo\" for inner2, got", bar.inner.Name())
 	}
 
-	if bar.Fun.Name() != "FooFn" {
+	if bar.Fun.Name() != "FooFn-44" {
 		t.Fatal("Expected \"FooFn\" for Fun, got", bar.Fun.Name())
 	}
+
+	require.Equal(t, &bar.Foo, &bar.Foo2)
+	require.NotEqual(t, bar.Fun, bar.Fun2) // Fun2, marked as transient, will have different instance
 }
 
 type Faulty struct {
