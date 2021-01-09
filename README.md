@@ -1,11 +1,14 @@
 # picodi
-A tiny Dependency Injection framework in Go
+A tiny Dependency Injection framework using reflection in Go
 
-With the advent of plugins (Go 1.8), DI _might_ be usefull.
-We could ask the plugin to wire itself with the supplied Depency PicoDI.
-This way context could evolve independently in the main program and in the plugins.
+This more or less replicates the behaviour [wire](https://github.com/google/wire) but uses reflection instead of code generation.
 
-With PicoDI we can concentrate all the configuration in one place.
+Since dependency injection is usually used in boot time, I would say that the performance difference between reflection and code generation has little impact.
+
+One advantage that this approach has is that we use singletons when doing the injection, without extra code to prevent it.
+Also, for property injection the code is easy to understand.
+
+And finally this was fun to code :)
 
 ## How to
 
