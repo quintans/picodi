@@ -1,17 +1,17 @@
 package picodi
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"unsafe"
 )
 
-// Wire is an interface for any implementation that has to implement wiring.
-type Wire interface {
-	Provider(string, interface{})
+// AfterWirer is an interface for any implementation that wants to something after being wired.
+type AfterWirer interface {
+	AfterWire() error
 }
+
 type providerFunc func() (interface{}, error)
 
 type injector struct {
@@ -23,8 +23,6 @@ type injector struct {
 type PicoDI struct {
 	injectors map[string]injector
 }
-
-var _ Wire = &PicoDI{}
 
 type chain struct {
 	field string
@@ -56,28 +54,58 @@ func New() *PicoDI {
 //
 // In both cases an entry is also created for the full tpye name. eg: `github.com/quintans/picodi/Foo`
 // Registering with an empty name will only register with the full type name.
-//	If the returned value of the provider is to be wired, it must return a pointer or interface
-func (pdi *PicoDI) Provider(name string, provider interface{}) {
+// If the returned value of the provider is to be wired, it must return a pointer or interface
+func (di *PicoDI) Provider(name string, provider interface{}) {
 	v := reflect.ValueOf(provider)
+	t := v.Type()
 	var tn string
 	var fn providerFunc
 	if v.Kind() == reflect.Func {
+		// validate function format. It should be `func(...any) any` or `func(...any) (any, error)`
+		validateProviderFunc(t)
+
 		fn = func() (interface{}, error) {
-			return pdi.constructorInjection(v)
+			return di.constructorInjection(v)
 		}
-		tn = typeName(v.Type().Out(0))
+		tn = typeName(t.Out(0))
 	} else {
 		fn = func() (interface{}, error) { return provider, nil }
-		tn = typeName(v.Type())
+		tn = typeName(t)
 	}
 
 	inj := injector{fn, nil}
 
 	if name != "" {
-		pdi.injectors[name] = inj
+		di.injectors[name] = inj
 	}
 	if tn != name {
-		pdi.injectors[tn] = inj
+		di.injectors[tn] = inj
+	}
+}
+
+func validateProviderFunc(t reflect.Type) error {
+	// must have 1 or more arguments
+	if t.NumIn() == 0 {
+		return fmt.Errorf("Invalid function provider '%s'. Must have 1 or more inputs", t.Name())
+	}
+	// must return 1 or 2 results
+	if t.NumOut() < 1 && t.NumOut() > 2 {
+		return fmt.Errorf("Invalid function provider '%s'. Must return at least 1 value. Optionally can also return an error", t.Name())
+	}
+	// if exists, the second result must be an error
+	if t.NumIn() == 2 {
+		_, ok := t.Out(1).(error)
+		if !ok {
+			return fmt.Errorf("Invalid function provider '%s'. Second return value must be an error", t.Name())
+		}
+	}
+
+	return nil
+}
+
+func (di *PicoDI) Providers(providers map[string]interface{}) {
+	for k, v := range providers {
+		di.Provider(k, v)
 	}
 }
 
@@ -91,35 +119,39 @@ func typeName(t reflect.Type) string {
 	return star + t.PkgPath() + "/" + t.Name()
 }
 
-func (pdi *PicoDI) constructorInjection(provider reflect.Value) (interface{}, error) {
+func (di *PicoDI) constructorInjection(provider reflect.Value) (interface{}, error) {
 	t := provider.Type()
 	argc := t.NumIn()
 	argv := make([]reflect.Value, argc)
 	for i := 0; i < argc; i++ {
 		at := t.In(i)
-		v, err := pdi.Resolve(typeName(at))
+		v, err := di.Resolve(typeName(at))
 		if err != nil {
 			return nil, err
 		}
 		argv[i] = reflect.ValueOf(v)
 	}
 	result := provider.Call(argv)
+	if len(result) == 2 {
+		return nil, result[1].Interface().(error)
+	}
+
 	return result[0].Interface(), nil
 }
 
 // GetByType returns the instance by Type
-func (pdi *PicoDI) GetByType(zero interface{}) (interface{}, error) {
+func (di *PicoDI) GetByType(zero interface{}) (interface{}, error) {
 	t := reflect.TypeOf(zero)
-	return pdi.get(make([]chain, 0), typeName(t))
+	return di.get(make([]chain, 0), typeName(t))
 }
 
 // Resolve returns the instance by name
-func (pdi *PicoDI) Resolve(name string) (interface{}, error) {
-	return pdi.get(make([]chain, 0), name)
+func (di *PicoDI) Resolve(name string) (interface{}, error) {
+	return di.get(make([]chain, 0), name)
 }
 
-func (pdi *PicoDI) get(fetching []chain, name string) (interface{}, error) {
-	inj, ok := pdi.injectors[name]
+func (di *PicoDI) get(fetching []chain, name string) (interface{}, error) {
+	inj, ok := di.injectors[name]
 	if !ok {
 		return nil, fmt.Errorf("No provider was found for %s: %s", name, joinChain(fetching))
 	}
@@ -136,7 +168,7 @@ func (pdi *PicoDI) get(fetching []chain, name string) (interface{}, error) {
 			ptr.Elem().Set(val)
 			val = ptr
 		}
-		if err := pdi.wire(fetching, val); err != nil {
+		if err := di.wire(fetching, val); err != nil {
 			return nil, err
 		}
 		inj.instance = v
@@ -147,18 +179,23 @@ func (pdi *PicoDI) get(fetching []chain, name string) (interface{}, error) {
 
 // Wire injects dependencies into the instance.
 // Dependencies marked for wiring without name will be mapped to their type name.
-func (pdi *PicoDI) Wire(value interface{}) error {
+// After wiring, if the passed value respects the "AfterWirer" interface, "AfterWire() error" will be called
+func (di *PicoDI) Wire(value interface{}) error {
 	val := reflect.ValueOf(value)
 	t := val.Kind()
 	if t != reflect.Interface && t != reflect.Ptr {
 		// the first wiring must be valid
-		var err = fmt.Sprintf("The first wiring must be a interface or a pointer: %#v", value)
-		return errors.New(err)
+		return fmt.Errorf("The first wiring must be a interface or a pointer: %#v", value)
 	}
-	return pdi.wire(make([]chain, 0), val)
+	err := di.wire(make([]chain, 0), val)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (pdi *PicoDI) wire(fetching []chain, val reflect.Value) error {
+func (di *PicoDI) wire(fetching []chain, val reflect.Value) error {
 	k := val.Kind()
 	if k != reflect.Ptr && k != reflect.Interface {
 		return nil
@@ -178,7 +215,7 @@ func (pdi *PicoDI) wire(fetching []chain, val reflect.Value) error {
 			var fieldName = t.String() + "." + f.Name
 			var link = chain{fieldName, name}
 			var names = append(fetching, link)
-			var v, err = pdi.get(names, name)
+			var v, err = di.get(names, name)
 			if err != nil {
 				return err
 			}
@@ -195,6 +232,10 @@ func (pdi *PicoDI) wire(fetching []chain, val reflect.Value) error {
 				fld.Set(reflect.ValueOf(v))
 			}
 		}
+	}
+
+	if aw, ok := val.Interface().(AfterWirer); ok {
+		return aw.AfterWire()
 	}
 
 	return nil

@@ -45,7 +45,7 @@ This also would work if the target type was an interface that the provided type 
 
 ## Factories
 
-We can also use dependy injection with functions.
+We can also use dependency injection with functions.
 
 Consider the following example were we have 3 types that depend on one another.
 
