@@ -102,6 +102,21 @@ And we could inject to a target structure using `di.Wire` like before or ask exp
 event, _ := di.Resolve("event") // will lazily wire
 ```
 
+## Wire with function
+
+```go
+var di = picodi.New()
+di.NamedProviders(picodi.NamedProviders{
+    "message": NewMessage,
+    "greeter": NewGreeter,
+})
+
+evt := Event{}
+err := di.Wire(func(g GreeterImpl) {
+    evt.Greeter = g
+})
+```
+
 ## Transient
 
 To force fresh instance to be injected we need to use the flag `transient` and use a factory provider.

@@ -166,3 +166,18 @@ func TestGrumpy(t *testing.T) {
 	_, err := di.Resolve("event") // will wire if not already
 	require.Error(t, err)
 }
+
+func TestWireFunc(t *testing.T) {
+	var di = picodi.New()
+	di.NamedProviders(picodi.NamedProviders{
+		"message": NewMessage,
+		"greeter": NewGreeter,
+	})
+
+	evt := Event{}
+	err := di.Wire(func(g GreeterImpl) {
+		evt.Greeter = g
+	})
+	require.NoError(t, err)
+	require.NotNil(t, evt.Greeter)
+}
