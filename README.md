@@ -5,8 +5,10 @@ This more or less replicates the behaviour [wire](https://github.com/google/wire
 
 Since dependency injection is usually used in boot time, I would say that the performance difference between reflection and code generation has little impact.
 
-One advantage that this approach has is that we use singletons when doing the injection, without extra code to prevent it.
+One advantage that this approach has is that we use singletons when doing the injection, without extra code to handle it.
 Also, for property injection the code is easy to understand.
+
+Overall the API is easier to work with.
 
 And finally this was fun to code :)
 

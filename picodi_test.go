@@ -89,8 +89,9 @@ func TestStructWire(t *testing.T) {
 		t.Fatal("Expected \"FooFn\" for Fun, got", bar.Fun.Name())
 	}
 
-	require.Equal(t, &bar.Foo, &bar.Foo2)
-	require.NotEqual(t, bar.Fun, bar.Fun2) // Fun2, marked as transient, will have different instance
+	require.Equal(t, &bar.Foo, &bar.Foo2, "Injected instances are not singletons")
+	// Fun2, marked as transient, will have different instance
+	require.NotEqual(t, bar.Fun, bar.Fun2, "Injected instances are not transients")
 }
 
 type Faulty struct {
@@ -115,21 +116,25 @@ type Greeter interface {
 
 type GreeterImpl struct {
 	Message Message
+	Chaos   int
 }
 
 func (g GreeterImpl) Greet() Message {
 	return g.Message
 }
 
-func NewGreeter(m Message) GreeterImpl {
-	return GreeterImpl{Message: m}
+func NewGreeter(m Message) *GreeterImpl {
+	return &GreeterImpl{
+		Message: m,
+		Chaos:   rand.Intn(100),
+	}
 }
 
 type Event struct {
 	Greeter Greeter
 }
 
-func NewEvent(g GreeterImpl) Event {
+func NewEvent(g *GreeterImpl) Event {
 	return Event{Greeter: g}
 }
 
@@ -138,24 +143,97 @@ func (e Event) Start() string {
 	return string(msg)
 }
 
-func TestWireConstructors(t *testing.T) {
+func TestWireByName(t *testing.T) {
 	var di = picodi.New()
 	di.NamedProvider("event", NewEvent)
 	di.NamedProvider("message", NewMessage)
 	di.NamedProvider("greeter", NewGreeter)
 
-	e, err := di.Resolve("event") // will wire if not already
+	e, err := di.Resolve("event")
 	require.NoError(t, err)
-
-	actual := e.(Event).Start()
+	event1 := e.(Event)
+	actual := event1.Start()
 	require.Equal(t, "Hi there!", actual)
+
+	// second resolve should return the same instance
+	e, err = di.Resolve("event")
+	require.NoError(t, err)
+	event2 := e.(Event)
+	require.NoError(t, err)
+	require.NotNil(t, event2.Greeter)
+
+	if event1.Greeter != event1.Greeter {
+		t.Fatal("Injected instances are not singletons")
+	}
+}
+
+func TestWire(t *testing.T) {
+	var di = picodi.New()
+	di.NamedProviders(picodi.NamedProviders{
+		"event":   NewEvent,
+		"message": NewMessage,
+		"greeter": NewGreeter,
+	})
+
+	e, err := di.Resolve("event")
+	require.NoError(t, err)
+	event1a := e.(Event)
+	actual := event1a.Start()
+	require.Equal(t, "Hi there!", actual)
+
+	e, err = di.Resolve("event")
+	require.NoError(t, err)
+	event1b := e.(Event)
+
+	if event1a.Greeter != event1b.Greeter {
+		t.Fatal("Injected instances are not singletons")
+	}
+
+	e, err = di.GetByType(Event{})
+	require.NoError(t, err)
+	event2a := e.(Event)
+	require.NotNil(t, event2a.Greeter)
+
+	e, err = di.GetByType(Event{})
+	require.NoError(t, err)
+	event2b := e.(Event)
+	require.NotNil(t, event2b.Greeter)
+
+	if event2a.Greeter != event2b.Greeter {
+		t.Fatal("Injected instances are not singletons")
+	}
+
+	event3a := Event{}
+	err = di.Wire(func(g *GreeterImpl) {
+		event3a.Greeter = g
+	})
+	require.NoError(t, err)
+	require.NotNil(t, event3a.Greeter)
+
+	event3b := Event{}
+	err = di.Wire(func(g *GreeterImpl) {
+		event3b.Greeter = g
+	})
+	require.NoError(t, err)
+	require.NotNil(t, event3b.Greeter)
+
+	if event3a.Greeter != event3b.Greeter {
+		t.Fatal("Injected instances are not singletons")
+	}
+
+	if event1a.Greeter != event2a.Greeter {
+		t.Fatal("Injected instances are not singletons")
+	}
+	if event2a.Greeter != event3a.Greeter {
+		t.Fatal("Injected instances are not singletons")
+	}
 }
 
 func NewGrumpyEvent(g GreeterImpl) (Event, error) {
 	return Event{}, errors.New("could not create event: I am grumpy")
 }
 
-func TestGrumpy(t *testing.T) {
+func TestWireWithError(t *testing.T) {
 	var di = picodi.New()
 	di.NamedProviders(picodi.NamedProviders{
 		"event":   NewGrumpyEvent,
@@ -165,19 +243,4 @@ func TestGrumpy(t *testing.T) {
 
 	_, err := di.Resolve("event") // will wire if not already
 	require.Error(t, err)
-}
-
-func TestWireFunc(t *testing.T) {
-	var di = picodi.New()
-	di.NamedProviders(picodi.NamedProviders{
-		"message": NewMessage,
-		"greeter": NewGreeter,
-	})
-
-	evt := Event{}
-	err := di.Wire(func(g GreeterImpl) {
-		evt.Greeter = g
-	})
-	require.NoError(t, err)
-	require.NotNil(t, evt.Greeter)
 }

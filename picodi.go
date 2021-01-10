@@ -31,22 +31,13 @@ type injector struct {
 
 // PicoDI is a tiny framework for Dependency Injection.
 type PicoDI struct {
-	injectors map[string]injector
-}
-
-type chain struct {
-	field string
-	name  string
-}
-
-func (c chain) String() string {
-	return c.field + " \"" + c.name + "\""
+	injectors map[string]*injector
 }
 
 // New creates a new PicoDI instance
 func New() *PicoDI {
 	return &PicoDI{
-		injectors: make(map[string]injector),
+		injectors: map[string]*injector{},
 	}
 }
 
@@ -73,6 +64,30 @@ func (di *PicoDI) NamedProvider(name string, provider interface{}) {
 	di.namedProvider(name, provider, false)
 }
 
+func (di *PicoDI) NamedProviders(providers NamedProviders) {
+	for k, v := range providers {
+		di.namedProvider(k, v, false)
+	}
+}
+
+func (di *PicoDI) NamedTransientProviders(providers NamedProviders) {
+	for k, v := range providers {
+		di.namedProvider(k, v, true)
+	}
+}
+
+func (di *PicoDI) Providers(providers Providers) {
+	for _, v := range providers {
+		di.namedProvider("", v, false)
+	}
+}
+
+func (di *PicoDI) TransientProviders(providers Providers) {
+	for _, v := range providers {
+		di.namedProvider("", v, true)
+	}
+}
+
 func (di *PicoDI) NamedTransientProvider(name string, provider interface{}) {
 	di.namedProvider(name, provider, true)
 }
@@ -97,7 +112,7 @@ func (di *PicoDI) namedProvider(name string, provider interface{}, transient boo
 		tn = typeName(t)
 	}
 
-	inj := injector{fn, nil, transient}
+	inj := &injector{fn, nil, transient}
 
 	if name != "" {
 		di.injectors[name] = inj
@@ -123,30 +138,6 @@ func validateProviderFunc(t reflect.Type) error {
 	return nil
 }
 
-func (di *PicoDI) NamedProviders(providers NamedProviders) {
-	for k, v := range providers {
-		di.namedProvider(k, v, false)
-	}
-}
-
-func (di *PicoDI) NamedTransientProviders(providers NamedProviders) {
-	for k, v := range providers {
-		di.namedProvider(k, v, true)
-	}
-}
-
-func (di *PicoDI) Providers(providers Providers) {
-	for _, v := range providers {
-		di.namedProvider("", v, false)
-	}
-}
-
-func (di *PicoDI) TransientProviders(providers Providers) {
-	for _, v := range providers {
-		di.namedProvider("", v, true)
-	}
-}
-
 func typeName(t reflect.Type) string {
 	var star string
 	k := t.Kind()
@@ -163,7 +154,7 @@ func (di *PicoDI) funcInjection(provider reflect.Value) (interface{}, error) {
 	argv := make([]reflect.Value, argc)
 	for i := 0; i < argc; i++ {
 		at := t.In(i)
-		v, err := di.Resolve(typeName(at))
+		v, err := di.get(typeName(at), false)
 		if err != nil {
 			return nil, err
 		}
@@ -187,26 +178,26 @@ func (di *PicoDI) funcInjection(provider reflect.Value) (interface{}, error) {
 // GetByType returns the instance by Type
 func (di *PicoDI) GetByType(zero interface{}) (interface{}, error) {
 	t := reflect.TypeOf(zero)
-	return di.get([]chain{}, typeName(t), false)
+	return di.get(typeName(t), false)
 }
 
 // Resolve returns the instance by name
 func (di *PicoDI) Resolve(name string) (interface{}, error) {
-	return di.get([]chain{}, name, false)
+	return di.get(name, false)
 }
 
-func (di *PicoDI) get(fetching []chain, name string, transient bool) (interface{}, error) {
+func (di *PicoDI) get(name string, transient bool) (interface{}, error) {
 	inj, ok := di.injectors[name]
 	if !ok {
-		return nil, fmt.Errorf("No provider was found for %s: %s", name, joinChain(fetching))
+		return nil, fmt.Errorf("No provider was found for %s", name)
 	}
 
 	if inj.transient || transient {
-		return di.instantiateAndWire(fetching, inj)
+		return di.instantiateAndWire(inj)
 	}
 
 	if inj.instance == nil {
-		provider, err := di.instantiateAndWire(fetching, inj)
+		provider, err := di.instantiateAndWire(inj)
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +207,7 @@ func (di *PicoDI) get(fetching []chain, name string, transient bool) (interface{
 	return inj.instance, nil
 }
 
-func (di *PicoDI) instantiateAndWire(fetching []chain, inj injector) (interface{}, error) {
+func (di *PicoDI) instantiateAndWire(inj *injector) (interface{}, error) {
 	provider, err := inj.provider()
 	if err != nil {
 		return nil, err
@@ -228,7 +219,7 @@ func (di *PicoDI) instantiateAndWire(fetching []chain, inj injector) (interface{
 		ptr.Elem().Set(val)
 		val = ptr
 	}
-	if err := di.wire(fetching, val); err != nil {
+	if err := di.wireFields(val); err != nil {
 		return nil, err
 	}
 
@@ -255,7 +246,7 @@ func (di *PicoDI) Wire(value interface{}) error {
 		return err
 	}
 
-	return di.wire([]chain{}, val)
+	return di.wireFields(val)
 }
 
 func validateWireFunc(t reflect.Type) error {
@@ -278,7 +269,7 @@ func validateWireFunc(t reflect.Type) error {
 	return nil
 }
 
-func (di *PicoDI) wire(fetching []chain, val reflect.Value) error {
+func (di *PicoDI) wireFields(val reflect.Value) error {
 	k := val.Kind()
 	if k != reflect.Ptr && k != reflect.Interface {
 		return nil
@@ -303,10 +294,7 @@ func (di *PicoDI) wire(fetching []chain, val reflect.Value) error {
 				}
 			}
 
-			var fieldName = t.String() + "." + f.Name
-			var link = chain{fieldName, name}
-			var names = append(fetching, link)
-			var v, err = di.get(names, name, transient)
+			var v, err = di.get(name, transient)
 			if err != nil {
 				return err
 			}
@@ -330,13 +318,4 @@ func (di *PicoDI) wire(fetching []chain, val reflect.Value) error {
 	}
 
 	return nil
-}
-
-func joinChain(fetching []chain) string {
-	var s = make([]string, len(fetching))
-	for k, v := range fetching {
-		s[k] = v.String()
-	}
-
-	return strings.Join(s, "->")
 }
