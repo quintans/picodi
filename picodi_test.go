@@ -177,9 +177,9 @@ func TestWireFuncByName(t *testing.T) {
 
 	// only strings will passed to factory
 	err := di.Wire(func(m map[picodi.Named]string) {
-		if len(m) != 2 {
-			t.Fatalf("Expected size 3 but got %d", len(m))
-		}
+		require.Equal(t, m["message1"], "hello")
+		require.Equal(t, m["message2"], "world")
+		require.Len(t, m, 2)
 	})
 	require.NoError(t, err)
 }
