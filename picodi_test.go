@@ -123,6 +123,7 @@ func (g GreeterImpl) Greet() Message {
 	return g.Message
 }
 
+// NewGreeter returns an implementation of Greeter
 func NewGreeter(m Message) *GreeterImpl {
 	return &GreeterImpl{
 		Message: m,
@@ -134,7 +135,8 @@ type Event struct {
 	Greeter Greeter
 }
 
-func NewEvent(g *GreeterImpl) Event {
+// NewEvent receives a Greeter interface
+func NewEvent(g Greeter) Event {
 	return Event{Greeter: g}
 }
 
@@ -146,8 +148,7 @@ func (e Event) Start() string {
 func TestWireByName(t *testing.T) {
 	var di = picodi.New()
 	di.NamedProvider("event", NewEvent)
-	di.NamedProvider("message", NewMessage)
-	di.NamedProvider("greeter", NewGreeter)
+	di.Providers(NewMessage, NewGreeter)
 
 	e, err := di.Resolve("event")
 	require.NoError(t, err)
@@ -187,10 +188,9 @@ func TestWireFuncByName(t *testing.T) {
 func TestWire(t *testing.T) {
 	var di = picodi.New()
 	di.NamedProviders(picodi.NamedProviders{
-		"event":   NewEvent,
-		"message": NewMessage,
-		"greeter": NewGreeter,
+		"event": NewEvent,
 	})
+	di.Providers(NewMessage, NewGreeter)
 
 	e, err := di.Resolve("event")
 	require.NoError(t, err)
@@ -206,6 +206,7 @@ func TestWire(t *testing.T) {
 		t.Fatal("Injected instances are not singletons")
 	}
 
+	di.Providers(NewEvent)
 	e, err = di.GetByType(Event{})
 	require.NoError(t, err)
 	event2a := e.(Event)
@@ -221,14 +222,14 @@ func TestWire(t *testing.T) {
 	}
 
 	event3a := Event{}
-	err = di.Wire(func(g *GreeterImpl) {
+	err = di.Wire(func(g Greeter) {
 		event3a.Greeter = g
 	})
 	require.NoError(t, err)
 	require.NotNil(t, event3a.Greeter)
 
 	event3b := Event{}
-	err = di.Wire(func(g *GreeterImpl) {
+	err = di.Wire(func(g Greeter) {
 		event3b.Greeter = g
 	})
 	require.NoError(t, err)
@@ -246,7 +247,7 @@ func TestWire(t *testing.T) {
 	}
 }
 
-func NewGrumpyEvent(g GreeterImpl) (Event, error) {
+func NewGrumpyEvent(g Greeter) (Event, error) {
 	return Event{}, errors.New("could not create event: I am grumpy")
 }
 

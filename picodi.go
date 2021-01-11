@@ -1,6 +1,7 @@
 package picodi
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -12,6 +13,7 @@ const (
 	wireFlagTransient = "transient"
 )
 
+// Named defines the type for the key for the map that groups all the same types, distinguished by name
 type Named string
 
 var (
@@ -19,8 +21,6 @@ var (
 )
 
 type NamedProviders map[string]interface{}
-
-type Providers []interface{}
 
 // AfterWirer is an interface for any implementation that wants to something after being wired.
 type AfterWirer interface {
@@ -50,10 +50,6 @@ func New() *PicoDI {
 	}
 }
 
-func (di *PicoDI) Provider(provider interface{}) {
-	di.namedProvider("", provider, false)
-}
-
 // NamedProvider register a provider.
 //	This is used like:
 //
@@ -69,39 +65,68 @@ func (di *PicoDI) Provider(provider interface{}) {
 // In both cases an entry is also created for the full type name. eg: `github.com/quintans/picodi/Foo`
 // Registering with an empty name will only register with the full type name.
 // If the returned value of the provider is to be wired, it must return a pointer or interface
-func (di *PicoDI) NamedProvider(name string, provider interface{}) {
-	di.namedProvider(name, provider, false)
+func (di *PicoDI) NamedProvider(name string, provider interface{}) error {
+	return di.namedProvider(name, provider, false)
 }
 
-func (di *PicoDI) NamedProviders(providers NamedProviders) {
+func (di *PicoDI) NamedProviders(providers NamedProviders) error {
 	for k, v := range providers {
-		di.namedProvider(k, v, false)
+		if k == "" {
+			return errors.New("name cannot be empty")
+		}
+		err := di.namedProvider(k, v, false)
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func (di *PicoDI) NamedTransientProviders(providers NamedProviders) {
+func (di *PicoDI) NamedTransientProviders(providers NamedProviders) error {
 	for k, v := range providers {
-		di.namedProvider(k, v, true)
+		if k == "" {
+			return errors.New("name cannot be empty")
+		}
+		err := di.namedProvider(k, v, true)
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func (di *PicoDI) Providers(providers Providers) {
+func (di *PicoDI) Providers(providers ...interface{}) error {
 	for _, v := range providers {
-		di.namedProvider("", v, false)
+		err := di.namedProvider("", v, false)
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func (di *PicoDI) TransientProviders(providers Providers) {
+func (di *PicoDI) TransientProviders(providers ...interface{}) error {
 	for _, v := range providers {
-		di.namedProvider("", v, true)
+		err := di.namedProvider("", v, true)
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func (di *PicoDI) NamedTransientProvider(name string, provider interface{}) {
-	di.namedProvider(name, provider, true)
+func (di *PicoDI) NamedTransientProvider(name string, provider interface{}) error {
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
+	return di.namedProvider(name, provider, true)
 }
 
-func (di *PicoDI) namedProvider(name string, provider interface{}, transient bool) {
+func (di *PicoDI) namedProvider(name string, provider interface{}, transient bool) error {
 	v := reflect.ValueOf(provider)
 	t := v.Type()
 	var tn reflect.Type
@@ -124,22 +149,33 @@ func (di *PicoDI) namedProvider(name string, provider interface{}, transient boo
 	inj := &injector{fn, nil, transient, tn}
 
 	if name != "" {
+		// name must be already registered
+		v, ok := di.namedInjectors[name]
+		if ok {
+			return fmt.Errorf("name already registered for type %s", v.typ)
+		}
 		di.namedInjectors[name] = inj
+	} else {
+		_, ok := di.typeInjectors[tn]
+		if ok {
+			return fmt.Errorf("type already registered: %s", tn)
+		}
+		di.typeInjectors[tn] = inj
 	}
 
-	di.typeInjectors[tn] = inj
+	return nil
 }
 
 func validateProviderFunc(t reflect.Type) error {
 	// must return 1 or 2 results
 	if t.NumOut() < 1 && t.NumOut() > 2 {
-		return fmt.Errorf("Invalid provider function '%s'. Must return at least 1 value. Optionally can also return an error", t.Name())
+		return fmt.Errorf("invalid provider function '%s'. Must return at least 1 value. Optionally can also return an error", t.Name())
 	}
 	// if we have 2 outputs, the second result must be an error
 	if t.NumOut() == 2 {
 		_, ok := t.Out(1).(error)
 		if !ok {
-			return fmt.Errorf("Invalid provider function '%s'. Second return value must be an error", t.Name())
+			return fmt.Errorf("invalid provider function '%s'. Second return value must be an error", t.Name())
 		}
 	}
 
@@ -159,7 +195,8 @@ func (di *PicoDI) funcInjection(provider reflect.Value) (interface{}, error) {
 			aMap := reflect.MakeMapWithSize(aMapType, 0)
 			// find all named type
 			for name, inj := range di.namedInjectors {
-				if inj.typ == valueType {
+				// implements an interface or it is of same type
+				if valueType.Kind() == reflect.Interface && inj.typ.Implements(valueType) || inj.typ == valueType {
 					v, err := di.getByName(name, false)
 					if err != nil {
 						return nil, err
@@ -206,16 +243,25 @@ func (di *PicoDI) Resolve(name string) (interface{}, error) {
 func (di *PicoDI) getByName(name string, transient bool) (interface{}, error) {
 	inj, ok := di.namedInjectors[name]
 	if !ok {
-		return nil, fmt.Errorf("No provider was found for name %s", name)
+		return nil, fmt.Errorf("no provider was found for name %s", name)
 	}
 
 	return di.get(inj, transient)
 }
 
 func (di *PicoDI) getByType(t reflect.Type, transient bool) (interface{}, error) {
+	if t.Kind() == reflect.Interface {
+		for _, v := range di.typeInjectors {
+			if v.typ.Implements(t) {
+				return di.get(v, transient)
+			}
+		}
+		return nil, fmt.Errorf("no implementation was found for interface type %s", t)
+	}
+
 	inj, ok := di.typeInjectors[t]
 	if !ok {
-		return nil, fmt.Errorf("No provider was found for type %s", t)
+		return nil, fmt.Errorf("no provider was found for type %s", t)
 	}
 
 	return di.get(inj, transient)
@@ -264,7 +310,7 @@ func (di *PicoDI) Wire(value interface{}) error {
 	t := val.Kind()
 	if t != reflect.Interface && t != reflect.Ptr && t != reflect.Func {
 		// the first wiring must be valid
-		return fmt.Errorf("The wiring must be an interface, pointer or  'func (...any) [error]': %#v", value)
+		return fmt.Errorf("the wiring must be an interface, pointer or  'func (...any) [error]': %#v", value)
 	}
 
 	if t == reflect.Func {
@@ -282,17 +328,17 @@ func (di *PicoDI) Wire(value interface{}) error {
 func validateWireFunc(t reflect.Type) error {
 	// must have 1 or more arguments
 	if t.NumIn() == 0 {
-		return fmt.Errorf("Invalid wire function '%s'. Must have 1 or more inputs", t.Name())
+		return fmt.Errorf("invalid wire function '%s'. Must have 1 or more inputs", t.Name())
 	}
 	// must return 1 or 2 results
 	if t.NumOut() > 1 {
-		return fmt.Errorf("Invalid wire function '%s'. It should have no return or only return error", t.Name())
+		return fmt.Errorf("invalid wire function '%s'. It should have no return or only return error", t.Name())
 	}
 	// if return exists, it must be an error
 	if t.NumOut() == 1 {
 		_, ok := t.Out(0).(error)
 		if !ok {
-			return fmt.Errorf("Invalid wire function '%s'. Return value must be an error", t.Name())
+			return fmt.Errorf("invalid wire function '%s'. Return value must be an error", t.Name())
 		}
 	}
 

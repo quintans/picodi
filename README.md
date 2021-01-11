@@ -8,7 +8,7 @@ Since dependency injection is usually used in boot time, I would say that the pe
 One advantage that this approach has is that we use singletons when doing the injection, without extra code to handle it.
 Also, for property injection the code is easy to understand.
 
-Overall the API is easier to work with. You only need to define providers and wire them.
+Overall the API is easier to work with. You only need to define **providers** and **wire** them.
 
 And finally this was fun to code :smile:
 
@@ -20,24 +20,97 @@ Consider the following
 type Foo struct {
     Name string
 }
+
+type Bar struct {
+    Foo Foo
+}
 ```
 
-we declare a named provider for that type
+and we want to inject `Foo` into `Bar`
+
+We create a provider for `Foo`
 
 ```go
 di := picodi.New()
-di.NamedProvider("foo", Foo{"Foo"})
+di.Providers(func() Foo {
+    return Foo{"Foo"}
+})
+// di.Providers(Foo{"Foo"}) // this would yield the same result
 ```
 
-> there are other ways of declaring a provider
+> there are other ways of creating a provider
+
+and then we wire
+
+```go
+bar := Bar{}
+di.Wire(func(foo Foo) {
+    bar.Foo = foo
+})
+```
+
+> there are other ways of wiring
+
+Multiple calls to wire will inject always the same Foo instance.
+
+Interfaces are resolve to the first implementation found that respects the interface.
+
+## Named providers
+
+In some situations we may need two instances for the same type, for example two database connections using the same driver.
+
+In this case we can use named providers.
+
+Consider the following
+
+```go
+type Foo struct {
+    Name string
+}
+
+type Bar struct {
+    Source Foo
+    Sink Foo
+}
+```
+
+and we want to inject `Foo` into `Bar`
+
+We create a provider for `Foo`
+
+```go
+di := picodi.New()
+picodi.NamedProviders{
+    "source": "SOURCE",
+    "sink": "SINK",
+    "other": 1, // this will not be passed in the map bellow
+})
+```
+
+and then we wire
+
+```go
+bar := Bar{}
+// notice the map key type: picodi.Named
+// m will have all 'string' types  
+di.Wire(func(m map[picodi.Named]string) {
+    bar.Source = m["source"]
+    bar.Sink = m["sink"]
+})
+```
+
+## Wiring Structs
 
 For a given struct that we are interested in wiring, we tag its fields with the name of the provider
 
 ```go
 type Bar struct {
-    Foo Foo `wire:"foo"`
+    Source Foo `wire:"source"`
+    Sink Foo `wire:"sink"`
 }
 ```
+
+> if no value is specified for the tag key wire, `wire:""` then the search will be done on the type instead of the name
 
 and then execute the wiring
 
@@ -46,11 +119,7 @@ bar := Bar{}
 di.Wire(&bar)
 ```
 
-This also would work if the target type was an interface that the provided type implemented.
-
-For a given name, or type when no name is provided, the same instance is used. If we call `di.Wire(&bar)` the same exact instance would be injected.
-
-## Factories
+## Using interfaces
 
 We can also use dependency injection with functions.
 
@@ -86,14 +155,9 @@ func (e Event) Start() string {
 like before, we declare the providers, but this time we use functions.
 
 ```go
-di.NamedProvider("event", func(g Greeter) Event {
-    return Event{Greeter: g}
-})
-di.Provider(func() Message {
-    return Message("Hi there!")
-})
-// Not a good practice for the provider to return an interface, but you can do it  
-di.Provider(func(m Message) Greeter {
+// this provider receives an interface. It will inject the first that it finds. 
+// Not a good practice for the provider to return an interface, but you can do it
+di.Providers(func(m Message) GreeterImpl {
     return GreeterImpl{Message: m}
 })
 ```
@@ -103,44 +167,6 @@ And we could inject to a target structure using `di.Wire` like before or ask exp
 ```go
 event, _ := di.Resolve("event") // will lazily wire
 ```
-
-## Wire with function
-
-```go
-var di = picodi.New()
-di.NamedProviders(picodi.NamedProviders{
-    "message": NewMessage,
-    "greeter": NewGreeter,
-})
-
-evt := Event{}
-err := di.Wire(func(g GreeterImpl) {
-    evt.Greeter = g
-})
-```
-
-If we the same type to be injected but different instances, for example for connection for two databases, 
-and if the struct wire tag is not possible to use, we can use named factories injections.
-
-```go
-func TestWireFuncByName(t *testing.T) {
-	di := picodi.New()
-	di.NamedProviders(picodi.NamedProviders{
-		"message1": "hello",
-		"message2": "world",
-		"message3": 1, // this will not be used injected bellow
-	})
-
-	// only strings will passed to factory
-	err := di.Wire(func(m map[picodi.Named]string) {
-		m1 := m["message1"]
-        m2 := m["message2"]
-        // ...
-    })
-}
-```
-
-> notice that the key type of the map is `picodi.Named`
 
 ## Transient
 
