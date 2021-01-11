@@ -12,6 +12,12 @@ const (
 	wireFlagTransient = "transient"
 )
 
+type Named string
+
+var (
+	namedType = reflect.TypeOf(Named(""))
+)
+
 type NamedProviders map[string]interface{}
 
 type Providers []interface{}
@@ -27,17 +33,20 @@ type injector struct {
 	provider  providerFunc
 	instance  interface{}
 	transient bool
+	typ       reflect.Type
 }
 
 // PicoDI is a tiny framework for Dependency Injection.
 type PicoDI struct {
-	injectors map[string]*injector
+	namedInjectors map[string]*injector
+	typeInjectors  map[reflect.Type]*injector
 }
 
 // New creates a new PicoDI instance
 func New() *PicoDI {
 	return &PicoDI{
-		injectors: map[string]*injector{},
+		namedInjectors: map[string]*injector{},
+		typeInjectors:  map[reflect.Type]*injector{},
 	}
 }
 
@@ -95,7 +104,7 @@ func (di *PicoDI) NamedTransientProvider(name string, provider interface{}) {
 func (di *PicoDI) namedProvider(name string, provider interface{}, transient bool) {
 	v := reflect.ValueOf(provider)
 	t := v.Type()
-	var tn string
+	var tn reflect.Type
 	var fn providerFunc
 	if v.Kind() == reflect.Func {
 		// validate function format. It should be `func(...any) any` or `func(...any) (any, error)`
@@ -104,22 +113,21 @@ func (di *PicoDI) namedProvider(name string, provider interface{}, transient boo
 		fn = func() (interface{}, error) {
 			return di.funcInjection(v)
 		}
-		tn = typeName(t.Out(0))
+		tn = t.Out(0)
 	} else {
 		fn = func() (interface{}, error) {
 			return provider, nil
 		}
-		tn = typeName(t)
+		tn = t
 	}
 
-	inj := &injector{fn, nil, transient}
+	inj := &injector{fn, nil, transient, tn}
 
 	if name != "" {
-		di.injectors[name] = inj
+		di.namedInjectors[name] = inj
 	}
-	if tn != name {
-		di.injectors[tn] = inj
-	}
+
+	di.typeInjectors[tn] = inj
 }
 
 func validateProviderFunc(t reflect.Type) error {
@@ -138,27 +146,36 @@ func validateProviderFunc(t reflect.Type) error {
 	return nil
 }
 
-func typeName(t reflect.Type) string {
-	var star string
-	k := t.Kind()
-	if k == reflect.Ptr {
-		star = "*"
-		t = t.Elem()
-	}
-	return star + t.PkgPath() + "/" + t.Name()
-}
-
 func (di *PicoDI) funcInjection(provider reflect.Value) (interface{}, error) {
 	t := provider.Type()
 	argc := t.NumIn()
 	argv := make([]reflect.Value, argc)
 	for i := 0; i < argc; i++ {
 		at := t.In(i)
-		v, err := di.get(typeName(at), false)
-		if err != nil {
-			return nil, err
+		if at.Kind() == reflect.Map && at.Key() == namedType {
+			valueType := at.Elem()
+			// create map
+			var aMapType = reflect.MapOf(namedType, valueType)
+			aMap := reflect.MakeMapWithSize(aMapType, 0)
+			// find all named type
+			for name, inj := range di.namedInjectors {
+				if inj.typ == valueType {
+					v, err := di.getByName(name, false)
+					if err != nil {
+						return nil, err
+					}
+
+					aMap.SetMapIndex(reflect.ValueOf(Named(name)), reflect.ValueOf(v))
+				}
+			}
+			argv[i] = aMap
+		} else {
+			arg, err := di.getByType(at, false)
+			if err != nil {
+				return nil, err
+			}
+			argv[i] = reflect.ValueOf(arg)
 		}
-		argv[i] = reflect.ValueOf(v)
 	}
 	results := provider.Call(argv)
 	if len(results) == 1 {
@@ -178,20 +195,33 @@ func (di *PicoDI) funcInjection(provider reflect.Value) (interface{}, error) {
 // GetByType returns the instance by Type
 func (di *PicoDI) GetByType(zero interface{}) (interface{}, error) {
 	t := reflect.TypeOf(zero)
-	return di.get(typeName(t), false)
+	return di.getByType(t, false)
 }
 
 // Resolve returns the instance by name
 func (di *PicoDI) Resolve(name string) (interface{}, error) {
-	return di.get(name, false)
+	return di.getByName(name, false)
 }
 
-func (di *PicoDI) get(name string, transient bool) (interface{}, error) {
-	inj, ok := di.injectors[name]
+func (di *PicoDI) getByName(name string, transient bool) (interface{}, error) {
+	inj, ok := di.namedInjectors[name]
 	if !ok {
-		return nil, fmt.Errorf("No provider was found for %s", name)
+		return nil, fmt.Errorf("No provider was found for name %s", name)
 	}
 
+	return di.get(inj, transient)
+}
+
+func (di *PicoDI) getByType(t reflect.Type, transient bool) (interface{}, error) {
+	inj, ok := di.typeInjectors[t]
+	if !ok {
+		return nil, fmt.Errorf("No provider was found for type %s", t)
+	}
+
+	return di.get(inj, transient)
+}
+
+func (di *PicoDI) get(inj *injector, transient bool) (interface{}, error) {
 	if inj.transient || transient {
 		return di.instantiateAndWire(inj)
 	}
@@ -283,10 +313,6 @@ func (di *PicoDI) wireFields(val reflect.Value) error {
 
 		if name, ok := f.Tag.Lookup(wireTagKey); ok {
 			splits := strings.Split(name, ",")
-			name = splits[0]
-			if name == "" {
-				name = typeName(f.Type)
-			}
 			transient := false
 			for _, v := range splits {
 				if v == wireFlagTransient {
@@ -294,7 +320,15 @@ func (di *PicoDI) wireFields(val reflect.Value) error {
 				}
 			}
 
-			var v, err = di.get(name, transient)
+			var v interface{}
+			var err error
+			name = splits[0]
+			if name == "" {
+				v, err = di.getByType(f.Type, transient)
+			} else {
+				v, err = di.getByName(name, transient)
+			}
+
 			if err != nil {
 				return err
 			}

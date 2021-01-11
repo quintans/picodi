@@ -8,17 +8,17 @@ Since dependency injection is usually used in boot time, I would say that the pe
 One advantage that this approach has is that we use singletons when doing the injection, without extra code to handle it.
 Also, for property injection the code is easy to understand.
 
-Overall the API is easier to work with.
+Overall the API is easier to work with. You only need to define providers and wire them.
 
-And finally this was fun to code :)
+And finally this was fun to code :smile:
 
-## How to
+## Quick example
 
-Considering the struct
+Consider the following
 
 ```go
 type Foo struct {
-    name string
+    Name string
 }
 ```
 
@@ -118,6 +118,29 @@ err := di.Wire(func(g GreeterImpl) {
     evt.Greeter = g
 })
 ```
+
+If we the same type to be injected but different instances, for example for connection for two databases, 
+and if the struct wire tag is not possible to use, we can use named factories injections.
+
+```go
+func TestWireFuncByName(t *testing.T) {
+	di := picodi.New()
+	di.NamedProviders(picodi.NamedProviders{
+		"message1": "hello",
+		"message2": "world",
+		"message3": 1, // this will not be used injected bellow
+	})
+
+	// only strings will passed to factory
+	err := di.Wire(func(m map[picodi.Named]string) {
+		m1 := m["message1"]
+        m2 := m["message2"]
+        // ...
+    })
+}
+```
+
+> notice that the key type of the map is `picodi.Named`
 
 ## Transient
 

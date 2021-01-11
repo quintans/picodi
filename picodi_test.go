@@ -167,6 +167,23 @@ func TestWireByName(t *testing.T) {
 	}
 }
 
+func TestWireFuncByName(t *testing.T) {
+	di := picodi.New()
+	di.NamedProviders(picodi.NamedProviders{
+		"message1": "hello",
+		"message2": "world",
+		"message3": 1, // this will not inject
+	})
+
+	// only strings will passed to factory
+	err := di.Wire(func(m map[picodi.Named]string) {
+		if len(m) != 2 {
+			t.Fatalf("Expected size 3 but got %d", len(m))
+		}
+	})
+	require.NoError(t, err)
+}
+
 func TestWire(t *testing.T) {
 	var di = picodi.New()
 	di.NamedProviders(picodi.NamedProviders{
