@@ -251,10 +251,18 @@ func (di *PicoDI) getByName(name string, transient bool) (interface{}, error) {
 
 func (di *PicoDI) getByType(t reflect.Type, transient bool) (interface{}, error) {
 	if t.Kind() == reflect.Interface {
+		// collects all the instances that respect the interface
+		matches := []*injector{}
 		for _, v := range di.typeInjectors {
 			if v.typ.Implements(t) {
-				return di.get(v, transient)
+				matches = append(matches, v)
 			}
+		}
+		if len(matches) == 1 {
+			return di.get(matches[0], transient)
+		}
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("more than one implementation was found for interface type %s. Consider using named providers", t)
 		}
 		return nil, fmt.Errorf("no implementation was found for interface type %s", t)
 	}
