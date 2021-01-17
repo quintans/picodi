@@ -188,3 +188,19 @@ bar := Bar{}
 di.Wire(&bar)
 di.Wire(&bar) // bar.Foo will be different from the previous call
 ```
+
+## Dry Run
+
+A disadvantage of using reflection is that you only know if something was misconfigured when you run the application.
+To mitigate this you can use the `DryRun()` method in a test to check the correctness of the configuration.
+
+This method will not run the providers, so nothing needs to be running.
+
+```go
+func TestDIConfig(t *testing.T) {
+    di := configuration.ConfigDI()
+    service := Service{}
+    err := di.DryRun(&service)
+    require.NoError(t, err)
+}
+```

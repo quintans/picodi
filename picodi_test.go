@@ -45,19 +45,22 @@ func (b *Bar) AfterWire() error {
 }
 
 func TestStructWire(t *testing.T) {
-	rand.Seed(42)
-	pico := picodi.New()
-	pico.NamedProvider("fooptr", &Foo{"Foo"})
-	pico.NamedProvider("foo", Foo{"Foo"})
-	pico.NamedProvider("foofn", func() Foo {
-		return Foo{fmt.Sprintf("FooFn-%d", rand.Intn(99))}
+	counter := 0
+	di := picodi.New()
+	di.NamedProvider("fooptr", &Foo{"Foo"})
+	di.NamedProvider("foo", Foo{"Foo"})
+	di.NamedProvider("foofn", func() Foo {
+		counter++
+		return Foo{fmt.Sprintf("FooFn-%d", counter)}
 	})
-	pico.NamedProvider("", Foo{"Foo"})
+	di.NamedProvider("", Foo{"Foo"})
 
 	var bar = Bar{}
-	if err := pico.Wire(&bar); err != nil {
-		t.Fatal("Unexpected error when wiring bar: ", err)
-	}
+	err := di.DryRun(&bar)
+	require.NoError(t, err)
+
+	err = di.Wire(&bar)
+	require.NoError(t, err)
 
 	require.True(t, bar.afterWire, "AfterWire() was not called")
 
@@ -85,8 +88,8 @@ func TestStructWire(t *testing.T) {
 		t.Fatal("Expected \"Foo\" for inner2, got", bar.inner.Name())
 	}
 
-	if bar.Fun.Name() != "FooFn-44" {
-		t.Fatal("Expected \"FooFn\" for Fun, got", bar.Fun.Name())
+	if bar.Fun.Name() != "FooFn-1" {
+		t.Fatal("Expected \"FooFn-1\" for Fun, got", bar.Fun.Name())
 	}
 
 	require.Equal(t, &bar.Foo, &bar.Foo2, "Injected instances are not singletons")
@@ -101,7 +104,7 @@ type Faulty struct {
 func TestErrorWire(t *testing.T) {
 	var pico = picodi.New()
 	err := pico.Wire(&Faulty{})
-	require.Error(t, err, "Expected error for missing provider, nothing")
+	require.Contains(t, err.Error(), "no provider was found for name")
 }
 
 type Message string
@@ -176,13 +179,26 @@ func TestWireFuncByName(t *testing.T) {
 		"message3": 1, // this will not inject
 	})
 
-	// only strings will passed to factory
-	err := di.Wire(func(m map[picodi.Named]string) {
-		require.Equal(t, m["message1"], "hello")
-		require.Equal(t, m["message2"], "world")
-		require.Len(t, m, 2)
-	})
+	var m1, m2 string
+	size := 0
+
+	fn := func(m map[picodi.Named]string) {
+		m1 = m["message1"]
+		m2 = m["message2"]
+		size = len(m)
+	}
+
+	err := di.DryRun(fn)
 	require.NoError(t, err)
+
+	// only strings will passed to factory
+	err = di.Wire(fn)
+	require.NoError(t, err)
+
+	require.Equal(t, m1, "hello")
+	require.Equal(t, m2, "world")
+	require.Equal(t, size, 2)
+
 }
 
 func TestWire(t *testing.T) {
@@ -247,18 +263,27 @@ func TestWire(t *testing.T) {
 	}
 }
 
+func TestDryRunWithError(t *testing.T) {
+	var di = picodi.New()
+	err := di.Providers(NewGreeter, NewEvent)
+	require.NoError(t, err)
+
+	err = di.DryRun(func(event Event) {})
+	require.Contains(t, err.Error(), "no provider was found for type")
+}
+
+var errGrumpy = errors.New("could not create event: I am grumpy")
+
 func NewGrumpyEvent(g Greeter) (Event, error) {
-	return Event{}, errors.New("could not create event: I am grumpy")
+	return Event{}, errGrumpy
 }
 
 func TestWireWithError(t *testing.T) {
 	var di = picodi.New()
-	di.NamedProviders(picodi.NamedProviders{
-		"event":   NewGrumpyEvent,
-		"message": NewMessage,
-		"greeter": NewGreeter,
-	})
+	di.NamedProvider("event", NewGrumpyEvent)
+	di.Providers(NewMessage, NewGreeter)
 
 	_, err := di.Resolve("event") // will wire if not already
 	require.Error(t, err)
+	require.True(t, errors.Is(err, errGrumpy), err)
 }
