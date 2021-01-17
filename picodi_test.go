@@ -38,10 +38,10 @@ func (b *Bar) SetInner(v *Foo) {
 	b.inner = v
 }
 
-func (b *Bar) AfterWire() error {
+func (b *Bar) AfterWire() (picodi.Clean, error) {
 	// after wire called
 	b.afterWire = true
-	return nil
+	return nil, nil
 }
 
 func TestStructWire(t *testing.T) {
@@ -53,13 +53,13 @@ func TestStructWire(t *testing.T) {
 		counter++
 		return Foo{fmt.Sprintf("FooFn-%d", counter)}
 	})
-	di.NamedProvider("", Foo{"Foo"})
+	di.Providers(Foo{"Foo"})
 
 	var bar = Bar{}
-	err := di.DryRun(&bar)
+	_, err := di.DryRun(&bar)
 	require.NoError(t, err)
 
-	err = di.Wire(&bar)
+	_, err = di.Wire(&bar)
 	require.NoError(t, err)
 
 	require.True(t, bar.afterWire, "AfterWire() was not called")
@@ -103,7 +103,7 @@ type Faulty struct {
 
 func TestErrorWire(t *testing.T) {
 	var pico = picodi.New()
-	err := pico.Wire(&Faulty{})
+	_, err := pico.Wire(&Faulty{})
 	require.Contains(t, err.Error(), "no provider was found for name")
 }
 
@@ -127,11 +127,19 @@ func (g GreeterImpl) Greet() Message {
 }
 
 // NewGreeter returns an implementation of Greeter
-func NewGreeter(m Message) *GreeterImpl {
-	return &GreeterImpl{
+func NewGreeter(m Message) (*GreeterImpl, picodi.Clean, error) {
+	g := &GreeterImpl{
 		Message: m,
 		Chaos:   rand.Intn(100),
 	}
+	return g, func() {
+		if g.Chaos <= -1 {
+			// should never be called
+			g.Chaos--
+		} else {
+			g.Chaos = -1
+		}
+	}, nil
 }
 
 type Event struct {
@@ -150,17 +158,21 @@ func (e Event) Start() string {
 
 func TestWireByName(t *testing.T) {
 	var di = picodi.New()
-	di.NamedProvider("event", NewEvent)
-	di.Providers(NewMessage, NewGreeter)
+	err := di.NamedProvider("event", NewEvent)
+	require.NoError(t, err)
+	err = di.Providers(NewMessage, NewGreeter)
+	require.NoError(t, err)
 
-	e, err := di.Resolve("event")
+	var clean1 picodi.Clean
+	e, clean1, err := di.Resolve("event")
 	require.NoError(t, err)
 	event1 := e.(Event)
 	actual := event1.Start()
 	require.Equal(t, "Hi there!", actual)
 
 	// second resolve should return the same instance
-	e, err = di.Resolve("event")
+	var clean2 picodi.Clean
+	e, clean2, err = di.Resolve("event")
 	require.NoError(t, err)
 	event2 := e.(Event)
 	require.NoError(t, err)
@@ -169,6 +181,14 @@ func TestWireByName(t *testing.T) {
 	if event1.Greeter != event1.Greeter {
 		t.Fatal("Injected instances are not singletons")
 	}
+
+	g := event1.Greeter.(*GreeterImpl)
+	require.NotEqual(t, -1, g.Chaos)
+	clean1()
+	require.Equal(t, -1, g.Chaos)
+	// clean1 == clean2 and calling a second time will have no effect
+	clean2()
+	require.Equal(t, -1, g.Chaos)
 }
 
 func TestWireFuncByName(t *testing.T) {
@@ -188,12 +208,13 @@ func TestWireFuncByName(t *testing.T) {
 		size = len(m)
 	}
 
-	err := di.DryRun(fn)
+	_, err := di.DryRun(fn)
 	require.NoError(t, err)
 
 	// only strings will passed to factory
-	err = di.Wire(fn)
+	clean, err := di.Wire(fn)
 	require.NoError(t, err)
+	require.Nil(t, clean)
 
 	require.Equal(t, m1, "hello")
 	require.Equal(t, m2, "world")
@@ -208,13 +229,13 @@ func TestWire(t *testing.T) {
 	})
 	di.Providers(NewMessage, NewGreeter)
 
-	e, err := di.Resolve("event")
+	e, _, err := di.Resolve("event")
 	require.NoError(t, err)
 	event1a := e.(Event)
 	actual := event1a.Start()
 	require.Equal(t, "Hi there!", actual)
 
-	e, err = di.Resolve("event")
+	e, _, err = di.Resolve("event")
 	require.NoError(t, err)
 	event1b := e.(Event)
 
@@ -223,12 +244,12 @@ func TestWire(t *testing.T) {
 	}
 
 	di.Providers(NewEvent)
-	e, err = di.GetByType(Event{})
+	e, _, err = di.GetByType(Event{})
 	require.NoError(t, err)
 	event2a := e.(Event)
 	require.NotNil(t, event2a.Greeter)
 
-	e, err = di.GetByType(Event{})
+	e, _, err = di.GetByType(Event{})
 	require.NoError(t, err)
 	event2b := e.(Event)
 	require.NotNil(t, event2b.Greeter)
@@ -238,14 +259,14 @@ func TestWire(t *testing.T) {
 	}
 
 	event3a := Event{}
-	err = di.Wire(func(g Greeter) {
+	_, err = di.Wire(func(g Greeter) {
 		event3a.Greeter = g
 	})
 	require.NoError(t, err)
 	require.NotNil(t, event3a.Greeter)
 
 	event3b := Event{}
-	err = di.Wire(func(g Greeter) {
+	_, err = di.Wire(func(g Greeter) {
 		event3b.Greeter = g
 	})
 	require.NoError(t, err)
@@ -268,7 +289,7 @@ func TestDryRunWithError(t *testing.T) {
 	err := di.Providers(NewGreeter, NewEvent)
 	require.NoError(t, err)
 
-	err = di.DryRun(func(event Event) {})
+	_, err = di.DryRun(func(event Event) {})
 	require.Contains(t, err.Error(), "no provider was found for type")
 }
 
@@ -280,10 +301,12 @@ func NewGrumpyEvent(g Greeter) (Event, error) {
 
 func TestWireWithError(t *testing.T) {
 	var di = picodi.New()
-	di.NamedProvider("event", NewGrumpyEvent)
-	di.Providers(NewMessage, NewGreeter)
+	err := di.NamedProvider("event", NewGrumpyEvent)
+	require.NoError(t, err)
+	err = di.Providers(NewMessage, NewGreeter)
+	require.NoError(t, err)
 
-	_, err := di.Resolve("event") // will wire if not already
+	_, _, err = di.Resolve("event") // will wire if not already
 	require.Error(t, err)
 	require.True(t, errors.Is(err, errGrumpy), err)
 }

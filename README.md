@@ -119,6 +119,17 @@ bar := Bar{}
 di.Wire(&bar)
 ```
 
+If a field is tagged with `wire` but it is unexported, then we will look for a setter for the field, for example a tagged field name `xpto string` then its setter `SetXpto(xpto string)` would be called. If there is no setter, we write directly to the field (lets avoid this situation)
+
+If the struct implements the `AfterWirer` interface, then we call `AfterWire() (Clean, error)` after all the fields are set, giving the opportunity to do any bootstrapping, validation, etc.
+
+```go
+func (b *Bar) AfterWire() (picodi.Clean, error) {
+	// after wire called
+	return nil, nil
+}
+```
+
 ## Using interfaces
 
 We can also use dependency injection with functions.
@@ -187,6 +198,31 @@ di.Provider(func() Foo {
 bar := Bar{}
 di.Wire(&bar)
 di.Wire(&bar) // bar.Foo will be different from the previous call
+```
+
+## Clean up
+
+If there is any clean up to be done, like disconnecting a database for a well behaved shutdown, the provider must return a function of type `picodi.Clean`.
+When wiring we receive a global clean function that we can call to do any clean up.
+
+```go
+// ...
+
+di.Provider(func() (Foo, picodi.Clean) {
+    return Foo{"Foo"}, func() {
+        fmt.Println("I am a clean up function but I don't do anything :P")
+    }
+}
+
+// ...
+
+clean, _ := di.Wire(&bar)
+
+// do stuff
+
+// cleaning
+clean()
+
 ```
 
 ## Dry Run

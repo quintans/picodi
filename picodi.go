@@ -18,20 +18,24 @@ type Named string
 
 var (
 	namedType = reflect.TypeOf(Named(""))
+	errorType = reflect.TypeOf((*error)(nil)).Elem()
+	cleanType = reflect.TypeOf((*Clean)(nil)).Elem()
 )
 
 type NamedProviders map[string]interface{}
 
 // AfterWirer is an interface for any implementation that wants to something after being wired.
 type AfterWirer interface {
-	AfterWire() error
+	AfterWire() (Clean, error)
 }
 
-type providerFunc func(dryRun bool) (interface{}, error)
+type providerFunc func(dryRun bool) (interface{}, Clean, error)
+type Clean func()
 
 type injector struct {
 	provider  providerFunc
 	instance  interface{}
+	clean     Clean
 	transient bool
 	typ       reflect.Type
 }
@@ -66,15 +70,15 @@ func New() *PicoDI {
 // Registering with an empty name will only register with the full type name.
 // If the returned value of the provider is to be wired, it must return a pointer or interface
 func (di *PicoDI) NamedProvider(name string, provider interface{}) error {
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
 	return di.namedProvider(name, provider, false)
 }
 
 func (di *PicoDI) NamedProviders(providers NamedProviders) error {
 	for k, v := range providers {
-		if k == "" {
-			return errors.New("name cannot be empty")
-		}
-		err := di.namedProvider(k, v, false)
+		err := di.NamedProvider(k, v)
 		if err != nil {
 			return err
 		}
@@ -85,10 +89,7 @@ func (di *PicoDI) NamedProviders(providers NamedProviders) error {
 
 func (di *PicoDI) NamedTransientProviders(providers NamedProviders) error {
 	for k, v := range providers {
-		if k == "" {
-			return errors.New("name cannot be empty")
-		}
-		err := di.namedProvider(k, v, true)
+		err := di.NamedTransientProvider(k, v)
 		if err != nil {
 			return err
 		}
@@ -133,20 +134,23 @@ func (di *PicoDI) namedProvider(name string, provider interface{}, transient boo
 	var fn providerFunc
 	if v.Kind() == reflect.Func {
 		// validate function format. It should be `func(...any) any` or `func(...any) (any, error)`
-		validateProviderFunc(t)
+		err := validateProviderFunc(t)
+		if err != nil {
+			return err
+		}
 
-		fn = func(dryRun bool) (interface{}, error) {
+		fn = func(dryRun bool) (interface{}, Clean, error) {
 			return di.funcInjection(v, dryRun)
 		}
 		tn = t.Out(0)
 	} else {
-		fn = func(_ bool) (interface{}, error) {
-			return provider, nil
+		fn = func(_ bool) (interface{}, Clean, error) {
+			return provider, nil, nil
 		}
 		tn = t
 	}
 
-	inj := &injector{fn, nil, transient, tn}
+	inj := &injector{fn, nil, nil, transient, tn}
 
 	if name != "" {
 		// name must be already registered
@@ -167,25 +171,48 @@ func (di *PicoDI) namedProvider(name string, provider interface{}, transient boo
 }
 
 func validateProviderFunc(t reflect.Type) error {
-	// must return 1 or 2 results
-	if t.NumOut() < 1 && t.NumOut() > 2 {
-		return fmt.Errorf("invalid provider function '%s'. Must return at least 1 value. Optionally can also return an error", t.Name())
+	// must return 1, 2 or 3 results
+	if t.NumOut() < 1 && t.NumOut() > 3 {
+		return fmt.Errorf("invalid provider function '%s'. Must return at least 1 value. Optionally can also return a clean function and/or error", t)
 	}
-	// if we have 2 outputs, the second result must be an error
-	if t.NumOut() == 2 {
-		_, ok := t.Out(1).(error)
-		if !ok {
-			return fmt.Errorf("invalid provider function '%s'. Second return value must be an error", t.Name())
+	// if we have 3 outputs, the last result must be an error
+	if t.NumOut() == 3 {
+		if !t.Out(2).AssignableTo(errorType) {
+			return fmt.Errorf("invalid provider function '%s'. Third return value must be an error", t)
 		}
+		if !t.Out(1).AssignableTo(cleanType) {
+			return fmt.Errorf("invalid provider function '%s'. Second return value must be '%s'", t, cleanType)
+		}
+		return nil
+	}
+	if t.NumOut() == 2 {
+		o := t.Out(1)
+		if !o.AssignableTo(cleanType) && !o.AssignableTo(errorType) {
+			return fmt.Errorf("invalid provider function '%s'. Second return value must be an error or '%s'", t, cleanType)
+		}
+		return nil
 	}
 
 	return nil
 }
 
-func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (interface{}, error) {
+func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (v interface{}, c Clean, err error) {
 	t := provider.Type()
 	argc := t.NumIn()
 	argv := make([]reflect.Value, argc)
+	var cleans []Clean
+	cleanDeps := func() {
+		for _, v := range cleans {
+			v()
+		}
+		cleans = nil
+	}
+
+	defer func() {
+		if err != nil {
+			cleanDeps()
+		}
+	}()
 	for i := 0; i < argc; i++ {
 		at := t.In(i)
 		if at.Kind() == reflect.Map && at.Key() == namedType {
@@ -197,23 +224,29 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (interface{
 			for name, inj := range di.namedInjectors {
 				// implements an interface or it is of same type
 				if valueType.Kind() == reflect.Interface && inj.typ.Implements(valueType) || inj.typ == valueType {
-					v, err := di.getByName(name, false, dryRun)
+					v, clean, err := di.getByName(name, false, dryRun)
 					if err != nil {
-						return nil, err
+						return nil, nil, err
+					}
+					if clean != nil {
+						cleans = append(cleans, clean)
 					}
 
 					aMap.SetMapIndex(reflect.ValueOf(Named(name)), reflect.ValueOf(v))
 				}
 			}
 			if aMap.Len() == 0 {
-				return nil, fmt.Errorf("no implementation was found for named type %s", t)
+				return nil, nil, fmt.Errorf("no implementation was found for named type %s", t)
 			}
 
 			argv[i] = aMap
 		} else {
-			arg, err := di.getByType(at, false, dryRun)
+			arg, clean, err := di.getByType(at, false, dryRun)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if clean != nil {
+				cleans = append(cleans, clean)
 			}
 			argv[i] = reflect.ValueOf(arg)
 		}
@@ -221,50 +254,67 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (interface{
 
 	if dryRun {
 		if t.NumOut() == 0 {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return reflect.Zero(t.Out(0)).Interface(), nil
+		return reflect.Zero(t.Out(0)).Interface(), nil, nil
 	}
 
 	results := provider.Call(argv)
 
+	var clean Clean
+	clear := func() {
+		cleanDeps()
+		if clean != nil {
+			clean()
+		}
+	}
+
+	// first wiring function
 	if len(results) == 0 {
-		return nil, nil
+		return nil, clear, nil
 	}
 
-	if len(results) == 1 {
-		return results[0].Interface(), nil
+	var value interface{}
+
+	if len(results) > 0 {
+		value = results[0].Interface()
 	}
 
-	e := results[1].Interface()
-	if e != nil {
-		return nil, e.(error)
+	if len(results) > 1 {
+		e := results[len(results)-1].Interface()
+		if er, ok := e.(error); ok {
+			return nil, nil, er
+		}
+		e = results[1].Interface()
+		if c, ok := e.(Clean); ok {
+			clean = c
+		}
 	}
 
-	return results[0].Interface(), nil
+	return value, clear, err
 }
 
 // GetByType returns the instance by Type
-func (di *PicoDI) GetByType(zero interface{}) (interface{}, error) {
+func (di *PicoDI) GetByType(zero interface{}) (interface{}, Clean, error) {
 	t := reflect.TypeOf(zero)
 	return di.getByType(t, false, false)
 }
 
 // Resolve returns the instance by name
-func (di *PicoDI) Resolve(name string) (interface{}, error) {
+func (di *PicoDI) Resolve(name string) (interface{}, Clean, error) {
 	return di.getByName(name, false, false)
 }
 
-func (di *PicoDI) getByName(name string, transient bool, dryRun bool) (interface{}, error) {
+func (di *PicoDI) getByName(name string, transient bool, dryRun bool) (interface{}, Clean, error) {
 	inj, ok := di.namedInjectors[name]
 	if !ok {
-		return nil, fmt.Errorf("no provider was found for name '%s'", name)
+		return nil, nil, fmt.Errorf("no provider was found for name '%s'", name)
 	}
 
 	return di.get(inj, transient, dryRun)
 }
 
-func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (interface{}, error) {
+func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (interface{}, Clean, error) {
 	if t.Kind() == reflect.Interface {
 		// collects all the instances that respect the interface
 		matches := []*injector{}
@@ -277,58 +327,82 @@ func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (interf
 			return di.get(matches[0], transient, dryRun)
 		}
 		if len(matches) > 1 {
-			return nil, fmt.Errorf("more than one implementation was found for interface type %s. Consider using named providers", t)
+			return nil, nil, fmt.Errorf("more than one implementation was found for interface type %s. Consider using named providers", t)
 		}
-		return nil, fmt.Errorf("no implementation was found for interface type %s", t)
+		return nil, nil, fmt.Errorf("no implementation was found for interface type %s", t)
 	}
 
 	inj, ok := di.typeInjectors[t]
 	if !ok {
-		return nil, fmt.Errorf("no provider was found for type %s", t)
+		return nil, nil, fmt.Errorf("no provider was found for type %s", t)
 	}
 
 	return di.get(inj, transient, dryRun)
 }
 
-func (di *PicoDI) get(inj *injector, transient bool, dryRun bool) (interface{}, error) {
+func (di *PicoDI) get(inj *injector, transient bool, dryRun bool) (interface{}, Clean, error) {
 	if inj.transient || transient || dryRun {
 		return di.instantiateAndWire(inj, dryRun)
 	}
 
 	if inj.instance == nil {
-		provider, err := di.instantiateAndWire(inj, dryRun)
+		provider, clean, err := di.instantiateAndWire(inj, dryRun)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		inj.instance = provider
+		if clean != nil {
+			inj.clean = func() {
+				if clean != nil {
+					clean()
+					clean = nil
+				}
+				inj.instance = nil
+				inj.clean = nil
+			}
+		}
 	}
 
-	return inj.instance, nil
+	return inj.instance, inj.clean, nil
 }
 
-func (di *PicoDI) instantiateAndWire(inj *injector, dryRun bool) (interface{}, error) {
-	v, err := inj.provider(dryRun)
+func (di *PicoDI) instantiateAndWire(inj *injector, dryRun bool) (interface{}, Clean, error) {
+	v, clean1, err := inj.provider(dryRun)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var clean2 Clean
 	val := reflect.ValueOf(v)
 	k := val.Kind()
 	if k == reflect.Struct {
 		ptr := reflect.New(reflect.TypeOf(v))
 		ptr.Elem().Set(val)
 		val = ptr
-		if err := di.wireFields(val, dryRun); err != nil {
-			return nil, err
+		clean2, err = di.wireFields(val, dryRun)
+		if err != nil {
+			return nil, nil, err
 		}
 	}
 
-	return v, nil
+	c := func() {
+		if clean1 != nil {
+			clean1()
+			clean1 = nil
+		}
+		if clean2 != nil {
+			clean2()
+			clean2 = nil
+		}
+	}
+
+	return v, c, nil
 }
 
 // Wire injects dependencies into the instance.
 // Dependencies marked for wiring without name will be mapped to their type name.
 // After wiring, if the passed value respects the "AfterWirer" interface, "AfterWire() error" will be called
-func (di *PicoDI) Wire(value interface{}) error {
+// A clean function is also returned to do any cleaning, like database disconnecting
+func (di *PicoDI) Wire(value interface{}) (Clean, error) {
 	return di.wire(value, false)
 }
 
@@ -336,25 +410,25 @@ func (di *PicoDI) Wire(value interface{}) error {
 // It is the same as Wire() but without instantiating anything.
 // This method should be used in unit testing to check if the wiring is correct.
 // This way we avoid to boot the whole application just to check if we made some mistake.
-func (di *PicoDI) DryRun(value interface{}) error {
+func (di *PicoDI) DryRun(value interface{}) (Clean, error) {
 	return di.wire(value, true)
 }
 
-func (di *PicoDI) wire(value interface{}, dryRun bool) error {
+func (di *PicoDI) wire(value interface{}, dryRun bool) (Clean, error) {
 	val := reflect.ValueOf(value)
 	t := val.Kind()
 	if t != reflect.Interface && t != reflect.Ptr && t != reflect.Func {
 		// the first wiring must be valid
-		return fmt.Errorf("the wiring must be an 'interface', 'pointer' or 'func (...any) [error]': %#v", value)
+		return nil, fmt.Errorf("the wiring must be an 'interface', 'pointer' or 'func (...any) [error]': %#v", value)
 	}
 
 	if t == reflect.Func {
 		err := validateWireFunc(val.Type())
 		if err != nil {
-			return err
+			return nil, err
 		}
-		_, err = di.funcInjection(val, dryRun)
-		return err
+		_, _, err = di.funcInjection(val, dryRun)
+		return nil, err
 	}
 
 	return di.wireFields(val, dryRun)
@@ -363,31 +437,45 @@ func (di *PicoDI) wire(value interface{}, dryRun bool) error {
 func validateWireFunc(t reflect.Type) error {
 	// must have 1 or more arguments
 	if t.NumIn() == 0 {
-		return fmt.Errorf("invalid wire function '%s'. Must have 1 or more inputs", t.Name())
+		return fmt.Errorf("invalid wire function '%s'. Must have 1 or more inputs", t)
 	}
 	// must return 1 or 2 results
 	if t.NumOut() > 1 {
-		return fmt.Errorf("invalid wire function '%s'. It should have no return or only return error", t.Name())
+		return fmt.Errorf("invalid wire function '%s'. It should have no return or only return error", t)
 	}
 	// if return exists, it must be an error
 	if t.NumOut() == 1 {
 		_, ok := t.Out(0).(error)
 		if !ok {
-			return fmt.Errorf("invalid wire function '%s'. Return value must be an error", t.Name())
+			return fmt.Errorf("invalid wire function '%s'. Return value must be an error", t)
 		}
 	}
 
 	return nil
 }
 
-func (di *PicoDI) wireFields(val reflect.Value, dryRun bool) error {
+func (di *PicoDI) wireFields(val reflect.Value, dryRun bool) (c Clean, err error) {
 	k := val.Kind()
 	if k != reflect.Ptr && k != reflect.Interface {
-		return nil
+		return nil, nil
 	}
 	// gets the inner struct
 	s := val.Elem()
 	t := s.Type()
+
+	var cleans []Clean
+	cleanDeps := func() {
+		for _, v := range cleans {
+			v()
+		}
+		cleans = nil
+	}
+
+	defer func() {
+		if err != nil {
+			cleanDeps()
+		}
+	}()
 
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
@@ -403,15 +491,19 @@ func (di *PicoDI) wireFields(val reflect.Value, dryRun bool) error {
 
 			var v interface{}
 			var err error
+			var clean Clean
 			name = splits[0]
 			if name == "" {
-				v, err = di.getByType(f.Type, transient, dryRun)
+				v, clean, err = di.getByType(f.Type, transient, dryRun)
 			} else {
-				v, err = di.getByName(name, transient, dryRun)
+				v, clean, err = di.getByName(name, transient, dryRun)
+			}
+			if err != nil {
+				return nil, err
 			}
 
-			if err != nil {
-				return err
+			if clean != nil {
+				cleans = append(cleans, clean)
 			}
 
 			var fieldValue = s.Field(i)
@@ -429,8 +521,16 @@ func (di *PicoDI) wireFields(val reflect.Value, dryRun bool) error {
 	}
 
 	if aw, ok := val.Interface().(AfterWirer); ok {
-		return aw.AfterWire()
+		clean, err := aw.AfterWire()
+		c := func() {
+			cleanDeps()
+			if clean != nil {
+				clean()
+				clean = nil
+			}
+		}
+		return c, err
 	}
 
-	return nil
+	return cleanDeps, nil
 }
