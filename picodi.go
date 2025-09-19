@@ -55,6 +55,7 @@ func New() *PicoDI {
 }
 
 // NamedProvider register a provider.
+//
 //	This is used like:
 //
 //	type Foo struct { Bar string }
@@ -374,10 +375,16 @@ func (di *PicoDI) instantiateAndWire(inj *injector, dryRun bool) (interface{}, C
 	var clean2 Clean
 	val := reflect.ValueOf(v)
 	k := val.Kind()
-	if k == reflect.Struct {
+	switch k {
+	case reflect.Interface, reflect.Pointer:
+		k = val.Elem().Kind()
+	case reflect.Struct:
 		ptr := reflect.New(reflect.TypeOf(v))
 		ptr.Elem().Set(val)
 		val = ptr
+	}
+
+	if k == reflect.Struct {
 		clean2, err = di.wireFields(val, dryRun)
 		if err != nil {
 			return nil, nil, err
@@ -417,7 +424,7 @@ func (di *PicoDI) DryRun(value interface{}) (Clean, error) {
 func (di *PicoDI) wire(value interface{}, dryRun bool) (Clean, error) {
 	val := reflect.ValueOf(value)
 	t := val.Kind()
-	if t != reflect.Interface && t != reflect.Ptr && t != reflect.Func {
+	if t != reflect.Interface && t != reflect.Pointer && t != reflect.Func {
 		// the first wiring must be valid
 		return nil, fmt.Errorf("the wiring must be an 'interface', 'pointer' or 'func (...any) [error]': %#v", value)
 	}
@@ -456,12 +463,15 @@ func validateWireFunc(t reflect.Type) error {
 
 func (di *PicoDI) wireFields(val reflect.Value, dryRun bool) (c Clean, err error) {
 	k := val.Kind()
-	if k != reflect.Ptr && k != reflect.Interface {
+	if k != reflect.Pointer && k != reflect.Interface {
 		return nil, nil
 	}
 	// gets the inner struct
 	s := val.Elem()
 	t := s.Type()
+	if t.Kind() != reflect.Struct {
+		return nil, nil
+	}
 
 	var cleans []Clean
 	cleanDeps := func() {

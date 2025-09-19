@@ -310,3 +310,31 @@ func TestWireWithError(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, errGrumpy), err)
 }
+
+type Level1 struct {
+	Level2 *Level2 `wire:""`
+}
+
+type Level2 struct {
+	Level3 *Level3 `wire:""`
+}
+
+type Level3 struct {
+	Value string
+}
+
+func TestDependencyTree(t *testing.T) {
+	var di = picodi.New()
+	err := di.Providers(&Level3{Value: "Hello"})
+	require.NoError(t, err)
+	err = di.Providers(&Level2{}) // we don't define Level3, it will be injected
+	require.NoError(t, err)
+
+	var l1 Level1
+	_, err = di.Wire(&l1)
+	require.NoError(t, err)
+
+	require.NotNil(t, l1.Level2)
+	require.NotNil(t, l1.Level2.Level3)
+	require.Equal(t, l1.Level2.Level3.Value, "Hello")
+}
