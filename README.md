@@ -10,7 +10,7 @@ Also, for property injection the code is easy to understand.
 
 Overall the API is easier to work with. You only need to define **providers** and **wire** them.
 
-And finally this was fun to code :smile:
+And finally, this was fun to code :smile:
 
 ## Quick example
 
