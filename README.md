@@ -1,20 +1,24 @@
-# picodi
-A tiny Dependency Injection framework using reflection in Go
+# PicoDI
 
-This more or less replicates the behaviour [wire](https://github.com/google/wire) but uses reflection instead of code generation.
+A lightweight dependency injection framework for Go using reflection.
 
-Since dependency injection is usually used in boot time, I would say that the performance difference between reflection and code generation has little impact.
+PicoDI replicates the behavior of [Google Wire](https://github.com/google/wire) but uses runtime reflection instead of code generation, emphasizing simplicity and ease of use.
 
-One advantage that this approach has is that we use singletons when doing the injection, without extra code to handle it.
-Also, for property injection the code is easy to understand.
+## Key Features
 
-Overall the API is easier to work with. You only need to define **providers** and **wire** them.
+- **Runtime reflection**: No code generation required
+- **Singleton by default**: Automatic singleton management without extra code
+- **Simple API**: Just define providers and wire dependencies
+- **Interface resolution**: Automatic resolution to implementations
+- **Named providers**: Support for multiple instances of the same type
+- **Cleanup support**: Built-in resource cleanup mechanisms
+- **Dry run validation**: Test dependency configuration without instantiation
 
-And finally, this was fun to code :smile:
+Since dependency injection typically occurs at boot time, the performance difference between reflection and code generation has minimal impact on overall application performance.
 
-## Quick example
+## Quick Start
 
-Consider the following
+Consider the following structs:
 
 ```go
 type Foo struct {
@@ -30,28 +34,26 @@ type Baz struct {
 }
 ```
 
-and we want to inject `Foo` into `Bar`
-
-We define providers
+To inject `Foo` into `Bar`, we define providers:
 
 ```go
 di := picodi.New()
 di.Providers(&Foo{"Foo"})
-di.Providers(&Bar{}) // not setting field Foo. It will be injected.
+di.Providers(&Bar{}) // Foo field will be automatically injected
 ```
 
-and then we wire
+Then we wire the dependencies:
 
 ```go
 baz := Baz{}
-di.Wire(&baz) // this will traverse all dependencies and wire them
+di.Wire(&baz) // Traverses and wires all dependencies
 ```
 
-This wiring is not restricted to structs as we will se bellow.
+This wiring approach works with both structs and functions, as shown in the examples below.
 
-## Using functions (constructor dependency injection)
+## Constructor Dependency Injection
 
-Consider the following
+You can use functions for constructor-style dependency injection:
 
 ```go
 type Foo struct {
@@ -59,13 +61,15 @@ type Foo struct {
 }
 
 type Bar struct {
-    Foo Foo // there is no need to have a wire tag
+    Foo Foo // No wire tag needed when using constructor injection
 }
 ```
 
+Define providers using functions:
+
 ```go
 di := picodi.New()
-// if needed, the function can have parameters that would be dependency injectd as well
+// Provider functions can have parameters for dependency injection
 di.Providers(func() Foo {
     return Foo{"Foo"}
 })
@@ -76,19 +80,15 @@ di.Wire(func(foo Foo) {
 })
 ```
 
-The way you wire is independent from the way we define providers.
+**Note**: The way you wire dependencies is independent of how you define providers. Multiple calls to `Wire()` will always inject the same `Foo` instance (singleton behavior by default).
 
-Multiple calls to wire will inject always the same Foo instance. This is the default.
+Interfaces are automatically resolved to the first implementation found that satisfies the interface.
 
-Interfaces are resolved to the first implementation found that respects the interface.
+## Named Providers
 
-## Named providers
+Sometimes you need multiple instances of the same type (e.g., two database connections using the same driver). Named providers solve this problem.
 
-In some situations we may need two instances for the same type, for example two database connections using the same driver.
-
-In this case we can use named providers.
-
-Consider the following
+Consider these structs:
 
 ```go
 type Foo struct {
@@ -97,76 +97,77 @@ type Foo struct {
 
 type Bar struct {
     Source Foo
-    Sink Foo
+    Sink   Foo
 }
 ```
 
-and we want to inject `Foo` into `Bar`
-
-We create a provider for `Foo`
+Create named providers:
 
 ```go
 di := picodi.New()
 di.NamedProviders(picodi.NamedProviders{
     "source": "SOURCE",
-    "sink": "SINK",
-    "other": 1, // this will not be passed in the map bellow
+    "sink":   "SINK",
+    "other":  1, // This won't be included in the string map below
 })
-// this is equivalent:
+
+// Equivalent to:
 // di.NamedProvider("source", "SOURCE")
-// di.NamedProvider("sousinkrce", "SINK")
+// di.NamedProvider("sink", "SINK")
 // di.NamedProvider("other", 1)
 ```
 
-and then we wire
+Wire using a map:
 
 ```go
 bar := Bar{}
-// notice the map key type: picodi.Named
-// m will have all 'string' types
-// other types can be applied with another Wire() call
+// The map key type is picodi.Named
+// m will contain all 'string' type providers
+// Other types require separate Wire() calls
 di.Wire(func(m map[picodi.Named]string) {
     bar.Source = m["source"]
     bar.Sink = m["sink"]
 })
 ```
 
-## Wiring Structs
+## Struct Field Injection
 
-For a given struct that we are interested in wiring, we tag its fields with the name of the provider
+Tag struct fields with the provider name to enable automatic named injection:
 
 ```go
 type Bar struct {
     Source Foo `wire:"source"`
-    Sink Foo `wire:"sink"`
+    Sink   Foo `wire:"sink"`
 }
 ```
 
-> if no value is specified for the tag key wire, `wire:""` then the search will be done on the type instead of the name
+> **Note**: If no value is specified for the wire tag (`wire:""`), the search will be done by type instead of name.
 
-and then execute the wiring
+Execute the wiring:
 
 ```go
 bar := Bar{}
 di.Wire(&bar)
 ```
 
-If a field is tagged with `wire` but it is unexported, then we will look for a setter for the field, for example a tagged field name `xpto string` then its setter `SetXpto(xpto string)` would be called. If there is no setter, we write directly to the field (lets avoid this situation)
+### Unexported Fields
 
-If the struct implements the `AfterWirer` interface, then we call `AfterWire() (Clean, error)` after all the fields are set, giving the opportunity to do any bootstrapping, validation, etc.
+If a field is tagged with `wire` but is unexported, PicoDI will look for a setter method. For example, for a field named `xpto string`, it will look for `SetXpto(xpto string)`. If no setter exists, it will write directly to the field (though this should be avoided when possible).
+
+### AfterWire Hook
+
+If a struct implements the `AfterWirer` interface, the `AfterWire() (Clean, error)` method will be called after all fields are set, providing an opportunity for bootstrapping, validation, etc.
 
 ```go
 func (b *Bar) AfterWire() (picodi.Clean, error) {
-	// after wire called
-	return nil, nil
+    // Perform post-injection setup
+    return nil, nil
 }
 ```
 
-## Using interfaces
+## Interface Resolution
 
-We can also use dependency injection with functions.
-
-Consider the following example were we have 3 types that depend on one another.
+PicoDI supports dependency injection with interfaces and functions. Consider this example with three interdependent types:
 
 ```go
 type Message string
@@ -193,29 +194,38 @@ func (e Event) Start() string {
 }
 ```
 
-> `GreeterImpl` implements `Greeter`
+> `GreeterImpl` implements the `Greeter` interface
 
-like before, we declare the providers, but this time we use functions.
+Declare providers using functions:
 
 ```go
-// this provider receives an interface. It will inject the first that it finds. 
-// Not a good practice for the provider to return an interface, but you can do it
+di := picodi.New()
+di.Providers(func() Message {
+    return Message("Hello, World!")
+})
+
+// This provider receives an interface parameter
+// PicoDI will inject the first implementation it finds
 di.Providers(func(m Message) GreeterImpl {
     return GreeterImpl{Message: m}
 })
+
+di.NamedProvider("event", func(g Greeter) Event {
+    return Event{Greeter: g}
+})
 ```
 
-And we could inject to a target structure using `di.Wire` like before or ask explicitly for the named type
+You can inject into a target structure using `di.Wire()` or request a specific named type:
 
 ```go
-event, _ := di.Resolve("event") // will lazily wire
+event, _ := di.Resolve("event") // Lazily wires dependencies
 ```
 
-## Transient
+## Transient Dependencies
 
-To force fresh instance to be injected we need to use the flag `transient` and use a factory provider.
+By default, PicoDI uses singleton behavior. To force fresh instances on each injection, use the `transient` flag with factory providers.
 
-> I provide this for completenes, but since picodi relies heavely on reflection performance will be impacted.
+> **Performance Note**: Since PicoDI relies heavily on reflection, transient dependencies will impact performance more than singletons.
 
 ```go
 type Bar struct {
@@ -225,52 +235,58 @@ type Bar struct {
 
 ```go
 di := picodi.New()
-di.Provider(func() Foo {
+di.Providers(func() Foo {
     return Foo{"Foo"}
-}
+})
 
 bar := Bar{}
 di.Wire(&bar)
-di.Wire(&bar) // bar.Foo will be a differente instance from the previous call
+di.Wire(&bar) // bar.Foo will be a different instance from the previous call
 ```
 
-## Clean up
+## Resource Cleanup
 
-If there is any clean up to be done, like disconnecting a database for a well behaved shutdown, the provider must return a function of type `picodi.Clean`.
-When wiring we receive a global clean function that we can call to do any clean up.
+For proper resource management (like database disconnections), providers can return a cleanup function of type `picodi.Clean`. When wiring, you receive a global cleanup function that handles all registered cleanup operations.
 
 ```go
-// ...
-
-di.Provider(func() (Foo, picodi.Clean) {
-    return Foo{"Foo"}, func() {
-        fmt.Println("I am a clean up function but I don't do anything :P")
+di := picodi.New()
+di.Providers(func() (Foo, picodi.Clean) {
+    foo := Foo{"Foo"}
+    return foo, func() {
+        fmt.Println("Cleaning up Foo resource")
     }
+})
+
+bar := Bar{}
+clean, err := di.Wire(&bar)
+if err != nil {
+    log.Fatal(err)
 }
 
-// ...
+// Use your dependencies...
 
-clean, _ := di.Wire(&bar)
-
-// do stuff
-
-// cleaning
+// Cleanup when done
 clean()
-
 ```
 
-## Dry Run
+## Validation with Dry Run
 
-A disadvantage of using reflection is that you only know if something was misconfigured when you run the application.
-To mitigate this you can use the `DryRun()` method in a test to check the correctness of the configuration.
+A disadvantage of using reflection is that configuration errors are only discovered at runtime. To mitigate this, use the `DryRun()` method in tests to validate your dependency configuration.
 
-This method will not run the providers, so nothing needs to be running.
+This method validates the configuration without actually running the providers, so no services need to be running.
 
 ```go
 func TestDIConfig(t *testing.T) {
-    di := picodi.New()
+    di := setupMyDI() // Your DI configuration
+    
     service := Service{}
     err := di.DryRun(&service)
     require.NoError(t, err)
 }
 ```
+
+This approach helps catch configuration issues early in your development cycle.
+
+## License
+
+This project is licensed under the terms specified in the LICENSE file.
