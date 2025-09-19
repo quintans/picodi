@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/quintans/picodi"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,13 +99,15 @@ func TestStructWire(t *testing.T) {
 }
 
 type Faulty struct {
-	bar Bar `wire:"missing"`
+	bar *Bar `wire:"missing"`
 }
 
 func TestErrorWire(t *testing.T) {
 	var pico = picodi.New()
-	_, err := pico.Wire(&Faulty{})
-	require.Contains(t, err.Error(), "no provider was found for name")
+	var faulty Faulty
+	_, err := pico.Wire(&faulty)
+	require.ErrorIs(t, err, picodi.ErrProviderNotFound)
+	assert.Nil(t, faulty.bar)
 }
 
 type Message string

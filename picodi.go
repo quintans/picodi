@@ -13,6 +13,12 @@ const (
 	wireFlagTransient = "transient"
 )
 
+var (
+	ErrProviderNotFound       = errors.New("no provider was found")
+	ErrProviderAlreadyExists  = errors.New("provider already exists")
+	ErrMultipleProvidersFound = errors.New("multiple providers were found")
+)
+
 // Named defines the type for the key for the map that groups all the same types, distinguished by name
 type Named string
 
@@ -157,13 +163,13 @@ func (di *PicoDI) namedProvider(name string, provider any, transient bool) error
 		// name must be already registered
 		v, ok := di.namedInjectors[name]
 		if ok {
-			return fmt.Errorf("name already registered for type %s", v.typ)
+			return fmt.Errorf("name already registered for type %s: %w", v.typ, ErrProviderAlreadyExists)
 		}
 		di.namedInjectors[name] = inj
 	} else {
 		_, ok := di.typeInjectors[tn]
 		if ok {
-			return fmt.Errorf("type already registered: %s", tn)
+			return fmt.Errorf("type already registered: %s: %w", tn, ErrProviderAlreadyExists)
 		}
 		di.typeInjectors[tn] = inj
 	}
@@ -237,7 +243,7 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (v any, c C
 				}
 			}
 			if aMap.Len() == 0 {
-				return nil, nil, fmt.Errorf("no implementation was found for named type %s", t)
+				return nil, nil, fmt.Errorf("%w: for named type %s", ErrProviderNotFound, t)
 			}
 
 			argv[i] = aMap
@@ -309,7 +315,7 @@ func (di *PicoDI) Resolve(name string) (any, Clean, error) {
 func (di *PicoDI) getByName(name string, transient bool, dryRun bool) (any, Clean, error) {
 	inj, ok := di.namedInjectors[name]
 	if !ok {
-		return nil, nil, fmt.Errorf("no provider was found for name '%s'", name)
+		return nil, nil, fmt.Errorf("%w: for name '%s'", ErrProviderNotFound, name)
 	}
 
 	return di.get(inj, transient, dryRun)
@@ -328,14 +334,14 @@ func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (any, C
 			return di.get(matches[0], transient, dryRun)
 		}
 		if len(matches) > 1 {
-			return nil, nil, fmt.Errorf("more than one implementation was found for interface type %s. Consider using named providers", t)
+			return nil, nil, fmt.Errorf("%w: for interface type %s", ErrMultipleProvidersFound, t)
 		}
-		return nil, nil, fmt.Errorf("no implementation was found for interface type %s", t)
+		return nil, nil, fmt.Errorf("%w: for interface type %s", ErrProviderNotFound, t)
 	}
 
 	inj, ok := di.typeInjectors[t]
 	if !ok {
-		return nil, nil, fmt.Errorf("no provider was found for type %s", t)
+		return nil, nil, fmt.Errorf("%w: for type %s", ErrProviderNotFound, t)
 	}
 
 	return di.get(inj, transient, dryRun)
