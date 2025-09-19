@@ -22,38 +22,65 @@ type Foo struct {
 }
 
 type Bar struct {
-    Foo Foo
+    Foo Foo `wire:""`
+}
+
+type Baz struct {
+    Bar Bar `wire:""`
 }
 ```
 
 and we want to inject `Foo` into `Bar`
 
-We create a provider for `Foo`
+We define providers
 
 ```go
 di := picodi.New()
-di.Providers(func() Foo {
-    return Foo{"Foo"}
-})
-// di.Providers(Foo{"Foo"}) // this would yield the same result
+di.Providers(&Foo{"Foo"})
+di.Providers(&Bar{}) // not setting field Foo. It will be injected.
 ```
-
-> there are other ways of creating a provider
 
 and then we wire
 
 ```go
+baz := Baz{}
+di.Wire(&baz) // this will traverse all dependencies and wire them
+```
+
+This wiring is not restricted to structs as we will se bellow.
+
+## Using functions (constructor dependency injection)
+
+Consider the following
+
+```go
+type Foo struct {
+    Name string
+}
+
+type Bar struct {
+    Foo Foo // there is no need to have a wire tag
+}
+```
+
+```go
+di := picodi.New()
+// if needed, the function can have parameters that would be dependency injectd as well
+di.Providers(func() Foo {
+    return Foo{"Foo"}
+})
+
 bar := Bar{}
 di.Wire(func(foo Foo) {
     bar.Foo = foo
 })
 ```
 
-> there are other ways of wiring
+The way you wire is independent from the way we define providers.
 
-Multiple calls to wire will inject always the same Foo instance.
+Multiple calls to wire will inject always the same Foo instance. This is the default.
 
-Interfaces are resolve to the first implementation found that respects the interface.
+Interfaces are resolved to the first implementation found that respects the interface.
 
 ## Named providers
 
@@ -80,11 +107,15 @@ We create a provider for `Foo`
 
 ```go
 di := picodi.New()
-picodi.NamedProviders{
+di.NamedProviders(picodi.NamedProviders{
     "source": "SOURCE",
     "sink": "SINK",
     "other": 1, // this will not be passed in the map bellow
 })
+// this is equivalent:
+// di.NamedProvider("source", "SOURCE")
+// di.NamedProvider("sousinkrce", "SINK")
+// di.NamedProvider("other", 1)
 ```
 
 and then we wire
@@ -92,7 +123,8 @@ and then we wire
 ```go
 bar := Bar{}
 // notice the map key type: picodi.Named
-// m will have all 'string' types  
+// m will have all 'string' types
+// other types can be applied with another Wire() call
 di.Wire(func(m map[picodi.Named]string) {
     bar.Source = m["source"]
     bar.Sink = m["sink"]
@@ -183,6 +215,8 @@ event, _ := di.Resolve("event") // will lazily wire
 
 To force fresh instance to be injected we need to use the flag `transient` and use a factory provider.
 
+> I provide this for completenes, but since picodi relies heavely on reflection performance will be impacted.
+
 ```go
 type Bar struct {
     Foo Foo `wire:",transient"`
@@ -197,7 +231,7 @@ di.Provider(func() Foo {
 
 bar := Bar{}
 di.Wire(&bar)
-di.Wire(&bar) // bar.Foo will be different from the previous call
+di.Wire(&bar) // bar.Foo will be a differente instance from the previous call
 ```
 
 ## Clean up
@@ -234,7 +268,7 @@ This method will not run the providers, so nothing needs to be running.
 
 ```go
 func TestDIConfig(t *testing.T) {
-    di := configuration.ConfigDI()
+    di := picodi.New()
     service := Service{}
     err := di.DryRun(&service)
     require.NoError(t, err)
