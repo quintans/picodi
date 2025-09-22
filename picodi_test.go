@@ -1,9 +1,11 @@
 package picodi_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/quintans/picodi"
@@ -175,13 +177,11 @@ func TestWireByName(t *testing.T) {
 
 	// second resolve should return the same instance
 	var clean2 picodi.Clean
-	e, clean2, err = di.Resolve("event")
-	require.NoError(t, err)
-	event2 := e.(Event)
+	event2, clean2, err := picodi.Resolve[Event](di, "event")
 	require.NoError(t, err)
 	require.NotNil(t, event2.Greeter)
 
-	if event1.Greeter != event1.Greeter {
+	if event1.Greeter != event2.Greeter {
 		t.Fatal("Injected instances are not singletons")
 	}
 
@@ -252,9 +252,8 @@ func TestWire(t *testing.T) {
 	event2a := e.(Event)
 	require.NotNil(t, event2a.Greeter)
 
-	e, _, err = di.GetByType(Event{})
+	event2b, _, err := picodi.GetByType[Event](di) // will wire if not already
 	require.NoError(t, err)
-	event2b := e.(Event)
 	require.NotNil(t, event2b.Greeter)
 
 	if event2a.Greeter != event2b.Greeter {
@@ -340,4 +339,38 @@ func TestDependencyTree(t *testing.T) {
 	require.NotNil(t, l1.Level2)
 	require.NotNil(t, l1.Level2.Level3)
 	require.Equal(t, l1.Level2.Level3.Value, "Hello")
+}
+
+type Stronger interface {
+	Strong(ctx context.Context, msg string) string
+}
+
+type StrongerImpl struct{}
+
+func (s StrongerImpl) Strong(_ context.Context, msg string) string {
+	return strings.ToUpper(msg)
+}
+
+type Shout func(context.Context, string) string
+
+func NewShoutHandler(s Stronger) Shout {
+	return func(ctx context.Context, msg string) string {
+		return fmt.Sprintf("!!! %s !!!", s.Strong(ctx, msg))
+	}
+}
+
+type Service struct {
+	Shout Shout `wire:""`
+}
+
+func TestWireHandler(t *testing.T) {
+	var di = picodi.New()
+	di.Providers(StrongerImpl{})
+	di.Providers(NewShoutHandler)
+
+	s := Service{}
+	_, err := di.Wire(&s)
+	require.NoError(t, err)
+
+	assert.Equal(t, "!!! HELLO !!!", s.Shout(context.Background(), "hello"))
 }

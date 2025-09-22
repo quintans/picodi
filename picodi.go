@@ -60,6 +60,36 @@ func New() *PicoDI {
 	}
 }
 
+func GetByType[T any](di *PicoDI) (T, Clean, error) {
+	var zero T
+	t := reflect.TypeOf(zero)
+	a, clean, err := di.getByType(t, false, false)
+	if err != nil {
+		return zero, nil, err
+	}
+	at, ok := a.(T)
+	if !ok {
+		return zero, nil, fmt.Errorf("expected %T, got %T", new(T), a)
+	}
+
+	return at, clean, nil
+}
+
+// Resolve returns the instance by name
+func Resolve[T any](di *PicoDI, name string) (T, Clean, error) {
+	var zero T
+	a, clean, err := di.getByName(name, false, false)
+	if err != nil {
+		return zero, nil, err
+	}
+	at, ok := a.(T)
+	if !ok {
+		return zero, nil, fmt.Errorf("expected %T, got %T", new(T), a)
+	}
+
+	return at, clean, nil
+}
+
 // NamedProvider register a provider.
 //
 //	This is used like:
