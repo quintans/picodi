@@ -246,7 +246,7 @@ di.Wire(&bar) // bar.Foo will be a different instance from the previous call
 
 ## Resource Cleanup
 
-For proper resource management (like database disconnections), providers can return a cleanup function of type `picodi.Clean`. When wiring, you receive a global cleanup function that handles all registered cleanup operations.
+For proper resource management (like database disconnections), providers can return a cleanup function of type `picodi.Clean`. Cleanup operations are registered when wiring, and to cleanup we call `Destroy()`.
 
 ```go
 di := picodi.New()
@@ -258,7 +258,7 @@ di.Providers(func() (Foo, picodi.Clean) {
 })
 
 bar := Bar{}
-clean, err := di.Wire(&bar)
+err := di.Wire(&bar)
 if err != nil {
     log.Fatal(err)
 }
@@ -266,7 +266,7 @@ if err != nil {
 // Use your dependencies...
 
 // Cleanup when done
-clean()
+di.Destroy()
 ```
 
 ## Validation with Dry Run

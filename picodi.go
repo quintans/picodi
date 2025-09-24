@@ -60,34 +60,34 @@ func New() *PicoDI {
 	}
 }
 
-func GetByType[T any](di *PicoDI) (T, Clean, error) {
+func GetByType[T any](di *PicoDI) (T, error) {
 	var zero T
 	t := reflect.TypeOf(zero)
-	a, clean, err := di.getByType(t, false, false)
+	a, _, err := di.getByType(t, false, false)
 	if err != nil {
-		return zero, nil, err
+		return zero, err
 	}
 	at, ok := a.(T)
 	if !ok {
-		return zero, nil, fmt.Errorf("expected %T, got %T", new(T), a)
+		return zero, fmt.Errorf("expected %T, got %T", new(T), a)
 	}
 
-	return at, clean, nil
+	return at, nil
 }
 
 // Resolve returns the instance by name
-func Resolve[T any](di *PicoDI, name string) (T, Clean, error) {
+func Resolve[T any](di *PicoDI, name string) (T, error) {
 	var zero T
-	a, clean, err := di.getByName(name, false, false)
+	a, _, err := di.getByName(name, false, false)
 	if err != nil {
-		return zero, nil, err
+		return zero, err
 	}
 	at, ok := a.(T)
 	if !ok {
-		return zero, nil, fmt.Errorf("expected %T, got %T", new(T), a)
+		return zero, fmt.Errorf("expected %T, got %T", new(T), a)
 	}
 
-	return at, clean, nil
+	return at, nil
 }
 
 // NamedProvider register a provider.
@@ -162,6 +162,55 @@ func (di *PicoDI) NamedTransientProvider(name string, provider any) error {
 		return errors.New("name cannot be empty")
 	}
 	return di.namedProvider(name, provider, true)
+}
+
+// GetByType returns the instance by Type
+func (di *PicoDI) GetByType(zero any) (any, error) {
+	t := reflect.TypeOf(zero)
+	instance, _, err := di.getByType(t, false, false)
+	return instance, err
+}
+
+// Resolve returns the instance by name
+func (di *PicoDI) Resolve(name string) (any, error) {
+	instance, _, err := di.getByName(name, false, false)
+	return instance, err
+}
+
+// Wire injects dependencies into the instance.
+// Dependencies marked for wiring without name will be mapped to their type name.
+// After wiring, if the passed value respects the "AfterWirer" interface, "AfterWire() error" will be called
+// A clean function is also returned to do any cleaning, like database disconnecting
+func (di *PicoDI) Wire(value any) error {
+	return di.wire(value, false)
+}
+
+// DryRun checks if existing wiring is possible.
+// It is the same as Wire() but without instantiating anything.
+// This method should be used in unit testing to check if the wiring is correct.
+// This way we avoid to boot the whole application just to check if we made some mistake.
+func (di *PicoDI) DryRun(value any) error {
+	return di.wire(value, true)
+}
+
+func (di *PicoDI) Destroy() {
+	for _, inj := range di.namedInjectors {
+		if inj.clean != nil {
+			inj.clean()
+			inj.clean = nil
+			inj.instance = nil
+		}
+	}
+	di.namedInjectors = map[string]*injector{}
+
+	for _, inj := range di.typeInjectors {
+		if inj.clean != nil {
+			inj.clean()
+			inj.clean = nil
+			inj.instance = nil
+		}
+	}
+	di.typeInjectors = map[reflect.Type]*injector{}
 }
 
 func (di *PicoDI) namedProvider(name string, provider any, transient bool) error {
@@ -331,17 +380,6 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (v any, c C
 	return value, clear, err
 }
 
-// GetByType returns the instance by Type
-func (di *PicoDI) GetByType(zero any) (any, Clean, error) {
-	t := reflect.TypeOf(zero)
-	return di.getByType(t, false, false)
-}
-
-// Resolve returns the instance by name
-func (di *PicoDI) Resolve(name string) (any, Clean, error) {
-	return di.getByName(name, false, false)
-}
-
 func (di *PicoDI) getByName(name string, transient bool, dryRun bool) (any, Clean, error) {
 	inj, ok := di.namedInjectors[name]
 	if !ok {
@@ -441,40 +479,25 @@ func (di *PicoDI) instantiateAndWire(inj *injector, dryRun bool) (any, Clean, er
 	return v, c, nil
 }
 
-// Wire injects dependencies into the instance.
-// Dependencies marked for wiring without name will be mapped to their type name.
-// After wiring, if the passed value respects the "AfterWirer" interface, "AfterWire() error" will be called
-// A clean function is also returned to do any cleaning, like database disconnecting
-func (di *PicoDI) Wire(value any) (Clean, error) {
-	return di.wire(value, false)
-}
-
-// DryRun checks if existing wiring is possible.
-// It is the same as Wire() but without instantiating anything.
-// This method should be used in unit testing to check if the wiring is correct.
-// This way we avoid to boot the whole application just to check if we made some mistake.
-func (di *PicoDI) DryRun(value any) (Clean, error) {
-	return di.wire(value, true)
-}
-
-func (di *PicoDI) wire(value any, dryRun bool) (Clean, error) {
+func (di *PicoDI) wire(value any, dryRun bool) error {
 	val := reflect.ValueOf(value)
 	t := val.Kind()
 	if t != reflect.Interface && t != reflect.Pointer && t != reflect.Func {
 		// the first wiring must be valid
-		return nil, fmt.Errorf("the wiring must be an 'interface', 'pointer' or 'func (...any) [error]': %#v", value)
+		return fmt.Errorf("the wiring must be an 'interface', 'pointer' or 'func (...any) [error]': %#v", value)
 	}
 
 	if t == reflect.Func {
 		err := validateWireFunc(val.Type())
 		if err != nil {
-			return nil, err
+			return err
 		}
 		_, _, err = di.funcInjection(val, dryRun)
-		return nil, err
+		return err
 	}
 
-	return di.wireFields(val, dryRun)
+	_, err := di.wireFields(val, dryRun)
+	return err
 }
 
 func validateWireFunc(t reflect.Type) error {
