@@ -69,9 +69,30 @@ Define providers using functions:
 
 ```go
 di := picodi.New()
-// Provider functions can have parameters for dependency injection
+// Provider functions can have various return signatures:
+
+// 1. Simple return
 di.Providers(func() Foo {
     return Foo{"Foo"}
+})
+
+// 2. With error handling
+di.Providers(func() (Foo, error) {
+    return Foo{"Foo"}, nil
+})
+
+// 3. With cleanup function
+di.Providers(func() (Foo, picodi.Clean) {
+    foo := Foo{"Foo"}
+    cleanup := func() { /* cleanup logic */ }
+    return foo, cleanup
+})
+
+// 4. With both cleanup and error
+di.Providers(func() (Foo, picodi.Clean, error) {
+    foo := Foo{"Foo"}
+    cleanup := func() { /* cleanup logic */ }
+    return foo, cleanup, nil
 })
 
 bar := Bar{}
@@ -105,16 +126,23 @@ Create named providers:
 
 ```go
 di := picodi.New()
+
+// Bulk registration using NamedProviders
 di.NamedProviders(picodi.NamedProviders{
     "source": "SOURCE",
     "sink":   "SINK",
     "other":  1, // This won't be included in the string map below
 })
-
-// Equivalent to:
+// Equivalent individual calls:
 // di.NamedProvider("source", "SOURCE")
 // di.NamedProvider("sink", "SINK")
 // di.NamedProvider("other", 1)
+
+// For transient (non-singleton) bulk registration
+di.NamedTransientProviders(picodi.NamedProviders{
+    "temp1": func() TempData { return TempData{} },
+    "temp2": func() TempData { return TempData{} },
+})
 ```
 
 Wire using a map:
@@ -205,7 +233,7 @@ di.Providers(func() Message {
 })
 
 // This provider receives an interface parameter
-// PicoDI will inject the first implementation it finds
+// PicoDI will automatically find the single implementation
 di.Providers(func(m Message) GreeterImpl {
     return GreeterImpl{Message: m}
 })
@@ -221,6 +249,50 @@ You can inject into a target structure using `di.Wire()` or request a specific n
 event, _ := di.Resolve("event") // Lazily wires dependencies
 ```
 
+### Interface Resolution Behavior
+
+When PicoDI encounters an interface dependency, it follows these rules:
+
+- **Single implementation**: Automatically resolves to the matching concrete type
+- **Multiple implementations**: Returns an error (`ErrMultipleProvidersFound`)
+- **No implementations**: Returns an error (`ErrProviderNotFound`)
+
+For cases with multiple implementations, use named providers and map injection:
+
+```go
+// Register multiple implementations with names
+di.NamedProvider("greeter1", GreeterImpl{Message: "Hello"})
+di.NamedProvider("greeter2", GreeterImpl{Message: "Hi"})
+
+// Collect all implementations in a map
+di.Wire(func(greeters map[picodi.Named]Greeter) {
+    // greeters contains both implementations by name
+    for name, greeter := range greeters {
+        fmt.Printf("%s says: %s\n", name, greeter.Greet())
+    }
+})
+```
+
+## Type-Safe Generic API
+
+PicoDI provides generic functions for type-safe dependency resolution:
+
+```go
+// Type-safe resolution by type (singleton access)
+event, err := picodi.GetByType[*Event](di)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Type-safe resolution by name
+namedEvent, err := picodi.Resolve[*Event](di, "event")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+These generic functions provide compile-time type safety and eliminate the need for type assertions, making your code more robust and easier to maintain.
+
 ## Transient Dependencies
 
 By default, PicoDI uses singleton behavior. To force fresh instances on each injection, use the `transient` flag with factory providers.
@@ -229,13 +301,13 @@ By default, PicoDI uses singleton behavior. To force fresh instances on each inj
 
 ```go
 type Bar struct {
-    Foo Foo `wire:",transient"`
+    Foo Foo `wire:""`
 }
 ```
 
 ```go
 di := picodi.New()
-di.Providers(func() Foo {
+di.TransientProviders(func() Foo {
     return Foo{"Foo"}
 })
 
@@ -286,6 +358,55 @@ func TestDIConfig(t *testing.T) {
 ```
 
 This approach helps catch configuration issues early in your development cycle.
+
+## Error Handling
+
+PicoDI provides specific error types for different failure scenarios:
+
+### Common Error Types
+
+- **`ErrProviderNotFound`**: No provider registered for the requested type or name
+- **`ErrProviderAlreadyExists`**: Attempting to register a provider that already exists
+- **`ErrMultipleProvidersFound`**: Multiple implementations found for an interface (use named providers instead)
+
+### Error Handling Examples
+
+```go
+di := picodi.New()
+
+// Provider registration errors
+err := di.Providers(someInstance)
+if errors.Is(err, picodi.ErrProviderAlreadyExists) {
+    log.Printf("Provider already registered: %v", err)
+}
+
+// Resolution errors
+greeter, err := picodi.GetByType[Greeter](di)
+if errors.Is(err, picodi.ErrProviderNotFound) {
+    log.Printf("No Greeter implementation found: %v", err)
+} else if errors.Is(err, picodi.ErrMultipleProvidersFound) {
+    log.Printf("Multiple Greeter implementations found, use named providers: %v", err)
+}
+
+// Named resolution errors
+service, err := picodi.Resolve[Service](di, "primary")
+if errors.Is(err, picodi.ErrProviderNotFound) {
+    log.Printf("No provider named 'primary': %v", err)
+}
+```
+
+### Provider Function Validation
+
+Provider functions are validated at registration time and must follow specific signatures:
+- Return 1-3 values: `Type`, `(Type, error)`, `(Type, Clean)`, or `(Type, Clean, error)`
+- Invalid signatures will cause registration to fail with a descriptive error
+
+### Wire Function Validation
+
+Wire functions are validated when `Wire()` is called:
+- Must have 1+ input parameters
+- Can return nothing or only an error
+- Invalid signatures will cause wiring to fail
 
 ## License
 

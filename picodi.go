@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	wireTagKey        = "wire"
-	wireFlagTransient = "transient"
+	wireTagKey = "wire"
 )
 
 var (
@@ -63,7 +62,7 @@ func New() *PicoDI {
 func GetByType[T any](di *PicoDI) (T, error) {
 	var zero T
 	t := reflect.TypeOf(zero)
-	a, _, err := di.getByType(t, false, false)
+	a, _, err := di.getByType(t, false)
 	if err != nil {
 		return zero, err
 	}
@@ -78,7 +77,7 @@ func GetByType[T any](di *PicoDI) (T, error) {
 // Resolve returns the instance by name
 func Resolve[T any](di *PicoDI, name string) (T, error) {
 	var zero T
-	a, _, err := di.getByName(name, false, false)
+	a, _, err := di.getByName(name, false)
 	if err != nil {
 		return zero, err
 	}
@@ -167,13 +166,13 @@ func (di *PicoDI) NamedTransientProvider(name string, provider any) error {
 // GetByType returns the instance by Type
 func (di *PicoDI) GetByType(zero any) (any, error) {
 	t := reflect.TypeOf(zero)
-	instance, _, err := di.getByType(t, false, false)
+	instance, _, err := di.getByType(t, false)
 	return instance, err
 }
 
 // Resolve returns the instance by name
 func (di *PicoDI) Resolve(name string) (any, error) {
-	instance, _, err := di.getByName(name, false, false)
+	instance, _, err := di.getByName(name, false)
 	return instance, err
 }
 
@@ -193,6 +192,7 @@ func (di *PicoDI) DryRun(value any) error {
 	return di.wire(value, true)
 }
 
+// Destroy calls all the registered clean functions and reset the PicoDI instance.
 func (di *PicoDI) Destroy() {
 	for _, inj := range di.namedInjectors {
 		if inj.clean != nil {
@@ -310,7 +310,7 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (v any, c C
 			for name, inj := range di.namedInjectors {
 				// implements an interface or it is of same type
 				if valueType.Kind() == reflect.Interface && inj.typ.Implements(valueType) || inj.typ == valueType {
-					v, clean, err := di.getByName(name, false, dryRun)
+					v, clean, err := di.getByName(name, dryRun)
 					if err != nil {
 						return nil, nil, err
 					}
@@ -327,7 +327,7 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (v any, c C
 
 			argv[i] = aMap
 		} else {
-			arg, clean, err := di.getByType(at, false, dryRun)
+			arg, clean, err := di.getByType(at, dryRun)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -380,16 +380,16 @@ func (di *PicoDI) funcInjection(provider reflect.Value, dryRun bool) (v any, c C
 	return value, clear, err
 }
 
-func (di *PicoDI) getByName(name string, transient bool, dryRun bool) (any, Clean, error) {
+func (di *PicoDI) getByName(name string, dryRun bool) (any, Clean, error) {
 	inj, ok := di.namedInjectors[name]
 	if !ok {
 		return nil, nil, fmt.Errorf("%w: for name '%s'", ErrProviderNotFound, name)
 	}
 
-	return di.get(inj, transient, dryRun)
+	return di.get(inj, dryRun)
 }
 
-func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (any, Clean, error) {
+func (di *PicoDI) getByType(t reflect.Type, dryRun bool) (any, Clean, error) {
 	if t.Kind() == reflect.Interface {
 		// collects all the instances that respect the interface
 		matches := []*injector{}
@@ -399,7 +399,7 @@ func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (any, C
 			}
 		}
 		if len(matches) == 1 {
-			return di.get(matches[0], transient, dryRun)
+			return di.get(matches[0], dryRun)
 		}
 		if len(matches) > 1 {
 			return nil, nil, fmt.Errorf("%w: for interface type %s", ErrMultipleProvidersFound, t)
@@ -412,11 +412,11 @@ func (di *PicoDI) getByType(t reflect.Type, transient bool, dryRun bool) (any, C
 		return nil, nil, fmt.Errorf("%w: for type %s", ErrProviderNotFound, t)
 	}
 
-	return di.get(inj, transient, dryRun)
+	return di.get(inj, dryRun)
 }
 
-func (di *PicoDI) get(inj *injector, transient bool, dryRun bool) (any, Clean, error) {
-	if inj.transient || transient || dryRun {
+func (di *PicoDI) get(inj *injector, dryRun bool) (any, Clean, error) {
+	if inj.transient || dryRun {
 		return di.instantiateAndWire(inj, dryRun)
 	}
 
@@ -550,22 +550,13 @@ func (di *PicoDI) wireFields(val reflect.Value, dryRun bool) (c Clean, err error
 		f := t.Field(i)
 
 		if name, ok := f.Tag.Lookup(wireTagKey); ok {
-			splits := strings.Split(name, ",")
-			transient := false
-			for _, v := range splits {
-				if v == wireFlagTransient {
-					transient = true
-				}
-			}
-
 			var v any
 			var err error
 			var clean Clean
-			name = splits[0]
 			if name == "" {
-				v, clean, err = di.getByType(f.Type, transient, dryRun)
+				v, clean, err = di.getByType(f.Type, dryRun)
 			} else {
-				v, clean, err = di.getByName(name, transient, dryRun)
+				v, clean, err = di.getByName(name, dryRun)
 			}
 			if err != nil {
 				return nil, err

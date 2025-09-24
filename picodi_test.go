@@ -31,7 +31,7 @@ type Bar struct {
 	inner     *Foo  `wire:"fooptr"`
 	inner2    Foo   `wire:"foo"`
 	Fun       Foo   `wire:"foofn"`
-	Fun2      Foo   `wire:"foofn,transient"` // a new instance will be created
+	Fun2      Foo   `wire:"foofn2"` // a new instance will be created every time
 	FooPtr    *Foo  `wire:"fooptr"`
 	afterWire bool
 }
@@ -48,17 +48,27 @@ func (b *Bar) AfterWire() (picodi.Clean, error) {
 
 func TestStructWire(t *testing.T) {
 	counter := 0
+	counterT := 0
 	di := picodi.New()
-	di.NamedProvider("fooptr", &Foo{"Foo"})
-	di.NamedProvider("foo", Foo{"Foo"})
-	di.NamedProvider("foofn", func() Foo {
+	err := di.NamedProvider("fooptr", &Foo{"Foo"})
+	require.NoError(t, err)
+	err = di.NamedProvider("foo", Foo{"Foo"})
+	require.NoError(t, err)
+	err = di.NamedProvider("foofn", func() Foo {
 		counter++
 		return Foo{fmt.Sprintf("FooFn-%d", counter)}
 	})
-	di.Providers(Foo{"Foo"})
+	require.NoError(t, err)
+	err = di.NamedTransientProvider("foofn2", func() Foo {
+		counterT++
+		return Foo{fmt.Sprintf("FooFn2-%d", counterT)}
+	})
+	require.NoError(t, err)
+	err = di.Providers(Foo{"Foo"})
+	require.NoError(t, err)
 
 	var bar = Bar{}
-	err := di.DryRun(&bar)
+	err = di.DryRun(&bar)
 	require.NoError(t, err)
 
 	err = di.Wire(&bar)
@@ -95,8 +105,12 @@ func TestStructWire(t *testing.T) {
 	}
 
 	require.Equal(t, &bar.Foo, &bar.Foo2, "Injected instances are not singletons")
+
+	err = di.Wire(&bar)
+	require.NoError(t, err)
 	// Fun2, marked as transient, will have different instance
-	require.NotEqual(t, bar.Fun, bar.Fun2, "Injected instances are not transients")
+	assert.Equal(t, "FooFn-1", bar.Fun.Name(), "Injected instances are not singletons")
+	assert.Equal(t, "FooFn2-2", bar.Fun2.Name(), "Injected instances are not transients")
 }
 
 type Faulty struct {
@@ -229,26 +243,26 @@ func TestWire(t *testing.T) {
 
 	e, err := di.Resolve("event")
 	require.NoError(t, err)
-	event1a := e.(Event)
+	event1a := e.(*Event)
 	actual := event1a.Start()
 	require.Equal(t, "Hi there!", actual)
 
 	e, err = di.Resolve("event")
 	require.NoError(t, err)
-	event1b := e.(Event)
+	event1b := e.(*Event)
 
 	if event1a.Greeter != event1b.Greeter {
 		t.Fatal("Injected instances are not singletons")
 	}
 
 	di.Providers(NewEvent)
-	e, err = di.GetByType(Event{})
+	e, err = di.GetByType(&Event{})
 	require.NoError(t, err)
-	event2a := e.(Event)
+	event2a := e.(*Event)
 	require.NotNil(t, event2a.Greeter)
 
 	// another way to get by type
-	event2b, err := picodi.GetByType[Event](di) // will wire if not already
+	event2b, err := picodi.GetByType[*Event](di) // will wire if not already
 	require.NoError(t, err)
 	require.NotNil(t, event2b.Greeter)
 
@@ -256,14 +270,14 @@ func TestWire(t *testing.T) {
 		t.Fatal("Injected instances are not singletons")
 	}
 
-	event3a := Event{}
+	event3a := &Event{}
 	err = di.Wire(func(g Greeter) {
 		event3a.Greeter = g
 	})
 	require.NoError(t, err)
 	require.NotNil(t, event3a.Greeter)
 
-	event3b := Event{}
+	event3b := &Event{}
 	err = di.Wire(func(g Greeter) {
 		event3b.Greeter = g
 	})
